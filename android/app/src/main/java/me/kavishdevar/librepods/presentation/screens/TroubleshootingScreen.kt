@@ -456,7 +456,7 @@ fun TroubleshootingScreen() {
                                                         listener = { /* Removed live log display */ },
                                                         connectionDetectedCallback = {
                                                             launch {
-                                                                delay(5000)
+                                                                delay(45_000)
                                                                 withContext(Dispatchers.Main) {
                                                                     if (isCollectingLogs) {
                                                                         logCollector.stopLogCollection()

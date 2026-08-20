@@ -7,6 +7,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.aboutLibraries)
     alias(libs.plugins.ksp)
+    alias(libs.plugins.chaquopy)
 //    alias(libs.plugins.hilt)
     id("kotlin-parcelize")
 }
@@ -49,9 +50,23 @@ android {
 
     defaultConfig {
         applicationId = "me.kavishdevar.librepods"
+        minSdk = 33
         targetSdk = 37
         versionCode = 63
         versionName = appVersionName
+
+        // Python 3.12 is available for Android's 64-bit ABIs. Restricting the native build
+        // here also prevents packaging an APK whose Java code exists on 32-bit but whose
+        // Find My network runtime cannot start.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
+
+        externalNativeBuild {
+            cmake {
+                arguments += "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384"
+            }
+        }
     }
     buildTypes {
         release {
@@ -128,6 +143,88 @@ android {
     flavorDimensions += "env"
 }
 
+// FindMy.py depends on anisette, which declares Unicorn even though this port supplies
+// Anisette with Apple's Android libraries. Unicorn has no Chaquopy wheel, so build a tiny
+// auditable pure-Python compatibility wheel from the checked-in stub sources.
+val unicornStubWheel = layout.buildDirectory.file(
+    "generated/stub-wheels/unicorn-2.1.1-py3-none-any.whl"
+)
+val bleakStubWheel = layout.buildDirectory.file(
+    "generated/stub-wheels/bleak-3.0.2-py3-none-any.whl"
+)
+
+fun resolvePythonExecutable(): String {
+    providers.gradleProperty("pythonExecutable").orNull?.let { return it }
+
+    val isWindows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
+    val names = if (isWindows) listOf("python.exe", "python3.exe") else listOf("python3", "python")
+    val pathDirs = (System.getenv("PATH") ?: "")
+        .split(File.pathSeparator)
+        .filter { it.isNotBlank() }
+
+    for (name in names) {
+        for (dir in pathDirs) {
+            val candidate = File(dir, name)
+            if (!candidate.isFile || !candidate.canExecute() || candidate.length() == 0L) continue
+            if (candidate.absolutePath.contains("WindowsApps", ignoreCase = true)) continue
+            return candidate.absolutePath
+        }
+    }
+
+    throw GradleException(
+        "No usable Python 3 interpreter found. Install Python 3 or pass " +
+            "-PpythonExecutable=/path/to/python."
+    )
+}
+
+val generateUnicornStubWheel by tasks.registering(Exec::class) {
+    group = "build"
+    description = "Builds the pure-Python Unicorn compatibility wheel for FindMy.py."
+
+    val script = rootProject.file("scripts/build_unicorn_stub_wheel.py")
+    inputs.dir(layout.projectDirectory.dir("stubs/unicorn"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.file(script).withPathSensitivity(PathSensitivity.RELATIVE)
+    outputs.file(unicornStubWheel)
+    outputs.cacheIf { true }
+
+    commandLine(resolvePythonExecutable(), script.absolutePath, unicornStubWheel.get().asFile.absolutePath)
+}
+
+val generateBleakStubWheel by tasks.registering(Exec::class) {
+    group = "build"
+    description = "Builds the pure-Python Bleak compatibility wheel for Android."
+
+    val script = rootProject.file("scripts/build_bleak_stub_wheel.py")
+    inputs.dir(layout.projectDirectory.dir("stubs/bleak"))
+        .withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.file(script).withPathSensitivity(PathSensitivity.RELATIVE)
+    outputs.file(bleakStubWheel)
+    outputs.cacheIf { true }
+
+    commandLine(resolvePythonExecutable(), script.absolutePath, bleakStubWheel.get().asFile.absolutePath)
+}
+
+tasks.matching { it.name.contains("PythonRequirements") || it.name.contains("PythonReqs") }
+    .configureEach { dependsOn(generateUnicornStubWheel, generateBleakStubWheel) }
+
+chaquopy {
+    defaultConfig {
+        version = "3.11"
+        pip {
+            install(unicornStubWheel.get().asFile.absolutePath)
+            install(bleakStubWheel.get().asFile.absolutePath)
+            install(
+                "git+https://github.com/parawanderer/FindMy.py@" +
+                    "23a9b8d7109b405f8362ea1e69ebe51f9ca82fca"
+            )
+            install("NSKeyedUnArchiver==1.5")
+            install("PyYAML==6.0.3")
+        }
+    }
+    productFlavors {}
+}
+
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.accompanist.permissions)
@@ -168,6 +265,8 @@ dependencies {
     implementation(libs.androidx.navigation3.runtime)
     implementation(libs.androidx.lifecycle.viewmodel.navigation3)
     implementation(libs.androidx.navigationevent)
+    implementation(libs.zip4j)
+    implementation(libs.osmdroid)
     testImplementation(libs.junit)
 }
 

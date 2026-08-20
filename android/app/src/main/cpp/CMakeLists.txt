@@ -55,3 +55,51 @@ target_link_libraries(l2c_fcr_hook
         android
         log
 )
+
+# Phone-native Anisette bridge used by the Find My network implementation. Apple's
+# libraries are downloaded from Apple's CDN at runtime, hash-checked, and loaded with
+# dlopen; they are never linked into or redistributed with LibrePods.
+add_library(opentagviewer SHARED
+        adi.cpp
+)
+
+target_link_libraries(opentagviewer
+        android
+        log
+)
+
+# libstoreservicescore.so declares these two libraries as dependencies but imports no
+# symbols from the large upstream implementations. Generate narrow stand-ins with the
+# exact SONAMEs required by Android's dynamic linker.
+function(add_apple_stub library)
+    set(symbols "${CMAKE_CURRENT_SOURCE_DIR}/stubs/lib${library}.symbols")
+    set(generated "${CMAKE_CURRENT_BINARY_DIR}/lib${library}_stub.c")
+    set(expected "${CMAKE_CURRENT_SOURCE_DIR}/stubs/lib${library}.expected")
+
+    set(inputs "${symbols}" "${CMAKE_CURRENT_SOURCE_DIR}/stubs/generate_stub.cmake")
+    if (EXISTS "${expected}")
+        list(APPEND inputs "${expected}")
+    endif ()
+
+    add_custom_command(
+            OUTPUT "${generated}"
+            COMMAND ${CMAKE_COMMAND}
+            -DSYMBOLS=${symbols}
+            -DEXPECTED=${expected}
+            -DOUTPUT=${generated}
+            -DLIBRARY=lib${library}.so
+            -DSAFE=${library}
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/stubs/generate_stub.cmake"
+            DEPENDS ${inputs}
+            COMMENT "Generating lib${library}.so stub"
+            VERBATIM)
+
+    add_library(${library}_stub SHARED "${generated}")
+    set_target_properties(${library}_stub PROPERTIES
+            OUTPUT_NAME "${library}"
+            PREFIX "lib")
+    target_link_libraries(${library}_stub log)
+endfunction()
+
+add_apple_stub(CoreFoundation)
+add_apple_stub(mediaplatform)

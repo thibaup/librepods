@@ -19,6 +19,7 @@
 package me.kavishdevar.librepods.bluetooth
 
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
@@ -72,7 +73,12 @@ class BLEManager(private val context: Context) {
         fun onLidStateChanged(lidOpen: Boolean)
         fun onEarStateChanged(device: AirPodsStatus, leftInEar: Boolean, rightInEar: Boolean)
         fun onBatteryChanged(device: AirPodsStatus)
-        fun onVerifiedRssi(rssi: Int)
+        fun onVerifiedRssi(
+            device: BluetoothDevice,
+            rssi: Int,
+            connectable: Boolean,
+            selectedDeviceIdentityVerified: Boolean
+        )
         fun onScanError(errorCode: Int)
         fun onDeviceDisappeared()
     }
@@ -82,6 +88,7 @@ class BLEManager(private val context: Context) {
     private var airPodsStatusListener: AirPodsStatusListener? = null
     private val deviceStatusMap = mutableMapOf<String, AirPodsStatus>()
     private val verifiedAddresses = mutableSetOf<String>()
+    private var verifiedIrk: ByteArray? = null
     private val sharedPreferences: SharedPreferences = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private var currentGlobalLidState: Boolean? = null
     private var lastBroadcastTime: Long = 0
@@ -353,19 +360,53 @@ class BLEManager(private val context: Context) {
 
             val manufacturerData = scanRecord.getManufacturerSpecificData(76) ?: return
 
-            if (!verifiedAddresses.contains(address)) {
-                val irk = getIrkFromPreferences()
-                if (irk == null || !BluetoothCryptography.verifyRPA(address, irk)) {
+            val irk = getIrkFromPreferences()
+            var newlyVerifiedOwnedRpa = false
+            val acceptedByOwnedRpa = synchronized(verifiedAddresses) {
+                val sameIrk = when {
+                    irk == null -> verifiedIrk == null
+                    verifiedIrk == null -> false
+                    else -> verifiedIrk!!.contentEquals(irk)
+                }
+                if (!sameIrk) {
+                    verifiedIrk?.fill(0)
+                    verifiedIrk = irk?.clone()
+                    verifiedAddresses.clear()
+                }
+                if (verifiedAddresses.contains(address)) {
+                    true
+                } else {
+                    val verified = irk != null && BluetoothCryptography.verifyRPA(address, irk)
+                    if (verified) {
+                        verifiedAddresses.add(address)
+                        newlyVerifiedOwnedRpa = true
+                    }
+                    verified
+                }
+            }
+            if (!acceptedByOwnedRpa) {
+                if (!acceptedByOwnedRpa &&
+                    !(finderScanMode && isOfflineAirPodsFinderAdvertisement(manufacturerData))
+                ) {
                     return
                 }
-                verifiedAddresses.add(address)
+                // In separated mode AirPods use Apple's offline Find My advertisement rather
+                // than the paired RPA. Accept it only inside the explicit foreground finder;
+                // never add that rotating address to the normal trusted-device cache.
+                Log.d(TAG, "Finder accepted a separated AirPods advertisement")
+            } else if (newlyVerifiedOwnedRpa) {
                 Log.d(TAG, "RPA verified and added to trusted list: $address")
             }
 
             // RSSI is useful on every verified advertisement. Keep the existing status-message
             // de-duplication below so finder updates do not increase unrelated status callbacks.
             if (finderScanMode) lastFinderVerifiedRssiAt = SystemClock.elapsedRealtime()
-            airPodsStatusListener?.onVerifiedRssi(result.rssi)
+            airPodsStatusListener?.onVerifiedRssi(
+                result.device,
+                result.rssi,
+                result.isConnectable,
+                acceptedByOwnedRpa
+            )
             if (processedAddresses.contains(address)) return
 
             // RSSI finding can use any advertisement from the verified rotating address. The
@@ -602,5 +643,11 @@ class BLEManager(private val context: Context) {
         private const val CLEANUP_INTERVAL_MS = 10000L
         private const val STALE_DEVICE_TIMEOUT_MS = 15000L
         private const val LID_CLOSE_TIMEOUT_MS = 2500L
+
+        /** Matches AirGuard's Apple manufacturer-data filter for offline AirPods. */
+        internal fun isOfflineAirPodsFinderAdvertisement(data: ByteArray): Boolean =
+            data.size >= 3 &&
+                data[0] == 0x12.toByte() &&
+                (data[2].toInt() and 0x18) == 0x18
     }
 }

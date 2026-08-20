@@ -26,10 +26,32 @@ internal enum class HeartRateRejectionReason {
     UNRECOGNIZED_HEART_RATE_PAYLOAD
 }
 
+internal enum class RtBuddyFrameKind {
+    MALFORMED,
+    METADATA,
+    ACKNOWLEDGEMENT,
+    OTHER,
+    HEART_RATE_REJECTED,
+    HEART_RATE_ACCEPTED
+}
+
+internal enum class HeartRateStartupStrategy(val diagnosticName: String) {
+    DIRECT("direct"),
+    HOSTLIB_ASSISTED("hostlib-assisted");
+
+    companion object {
+        fun forAttempt(attemptNumber: Int): HeartRateStartupStrategy =
+            if (attemptNumber <= 1) DIRECT else HOSTLIB_ASSISTED
+    }
+}
+
 internal data class HeartRateDecodeResult(
     val samples: List<HeartRateSample> = emptyList(),
     val relatedFrameCount: Int = 0,
     val rejectionReasons: Map<HeartRateRejectionReason, Int> = emptyMap(),
+    val rtBuddyFrameCount: Int = 0,
+    val frameKinds: Map<RtBuddyFrameKind, Int> = emptyMap(),
+    val logTypes: Map<Int, Int> = emptyMap(),
     val suppressRawLogging: Boolean = false,
     val passthroughPackets: List<ByteArray> = emptyList()
 ) {
@@ -42,6 +64,21 @@ internal data class HeartRateServiceResolution(
     val discoveredFromMetadata: Boolean
 )
 
+internal data class HostLibHidInitializationOutcome(
+    val serviceId: Int?,
+    val sent: Boolean,
+    val acknowledged: Boolean
+) {
+    val advertised: Boolean
+        get() = serviceId != null
+
+    // Some firmware/session combinations do not emit the exact ACK shape we recognize. Once the
+    // initialization was written successfully, preserve the legacy HR startup path and use the ACK
+    // only as a diagnostic signal.
+    val canContinue: Boolean
+        get() = !advertised || sent
+}
+
 internal suspend fun waitForHeartRateServiceResolution(
     decoder: RtBuddyHeartRateDecoder,
     timeoutMillis: Long,
@@ -51,8 +88,26 @@ internal suspend fun waitForHeartRateServiceResolution(
     val deadline = elapsedRealtimeMillis() + timeoutMillis.coerceAtLeast(0L)
     while (true) {
         val resolution = decoder.heartRateServiceResolution()
-        if (resolution.discoveredFromMetadata) return true
+        if (resolution.discoveredFromMetadata &&
+            decoder.discoveredHostLibHidServiceId() != null
+        ) return true
         if (elapsedRealtimeMillis() >= deadline) return resolution.serviceId != null
+        pause(25L)
+    }
+}
+
+internal suspend fun waitForRtBuddyAcknowledgement(
+    decoder: RtBuddyHeartRateDecoder,
+    serviceId: Int,
+    acknowledgementCountBeforeSend: Int,
+    timeoutMillis: Long,
+    elapsedRealtimeMillis: () -> Long,
+    pause: suspend (Long) -> Unit
+): Boolean {
+    val deadline = elapsedRealtimeMillis() + timeoutMillis.coerceAtLeast(0L)
+    while (true) {
+        if (decoder.acknowledgementCount(serviceId) > acknowledgementCountBeforeSend) return true
+        if (elapsedRealtimeMillis() >= deadline) return false
         pause(25L)
     }
 }
@@ -71,13 +126,30 @@ internal class RtBuddyHeartRateDecoder(
 ) {
     private var carry = ByteArray(0)
     private var discoveredHeartRateServiceId: Int? = null
+    private var discoveredHostLibHidServiceId: Int? = null
     private val explicitlyNonHeartRateServiceIds = mutableSetOf<Int>()
+    private val acknowledgementCounts = mutableMapOf<Int, Int>()
 
     @Synchronized
     fun reset() {
         carry = ByteArray(0)
         discoveredHeartRateServiceId = null
+        discoveredHostLibHidServiceId = null
         explicitlyNonHeartRateServiceIds.clear()
+        acknowledgementCounts.clear()
+    }
+
+    /**
+     * Clears only bytes and acknowledgements tied to the old L2CAP transport.
+     *
+     * AirPods can keep advertising the RTBuddy service roles only on the first AACP
+     * session.  A transient socket rebuild therefore must not turn a previously
+     * observed HeartRateService into the global legacy service-19 fallback.
+     */
+    @Synchronized
+    fun resetForTransportReconnect() {
+        carry = ByteArray(0)
+        acknowledgementCounts.clear()
     }
 
     /** The service to target for this connection, or null when metadata rules out the fallback. */
@@ -88,6 +160,12 @@ internal class RtBuddyHeartRateDecoder(
 
     @Synchronized
     fun discoveredHeartRateServiceId(): Int? = discoveredHeartRateServiceId
+
+    @Synchronized
+    fun discoveredHostLibHidServiceId(): Int? = discoveredHostLibHidServiceId
+
+    @Synchronized
+    fun acknowledgementCount(serviceId: Int): Int = acknowledgementCounts[serviceId] ?: 0
 
     @Synchronized
     fun heartRateServiceResolution(): HeartRateServiceResolution {
@@ -111,7 +189,10 @@ internal class RtBuddyHeartRateDecoder(
         val samples = mutableListOf<HeartRateSample>()
         val passthroughPackets = mutableListOf<ByteArray>()
         val rejectionReasons = mutableMapOf<HeartRateRejectionReason, Int>()
+        val frameKinds = mutableMapOf<RtBuddyFrameKind, Int>()
+        val logTypes = mutableMapOf<Int, Int>()
         var relatedFrameCount = 0
+        var rtBuddyFrameCount = 0
         var suppressRawLogging = carryWasSensitive
         var cursor = 0
 
@@ -159,6 +240,9 @@ internal class RtBuddyHeartRateDecoder(
 
             val frame = data.copyOfRange(frameOffset, frameOffset + frameLength)
             val classification = classifyFrame(frame)
+            rtBuddyFrameCount++
+            frameKinds.increment(classification.kind)
+            classification.logType?.let { logType -> logTypes.increment(logType) }
             if (classification.related || classification.consumed) {
                 if (classification.related) {
                     relatedFrameCount++
@@ -177,6 +261,9 @@ internal class RtBuddyHeartRateDecoder(
             samples = samples,
             relatedFrameCount = relatedFrameCount,
             rejectionReasons = rejectionReasons,
+            rtBuddyFrameCount = rtBuddyFrameCount,
+            frameKinds = frameKinds,
+            logTypes = logTypes,
             suppressRawLogging = suppressRawLogging,
             passthroughPackets = passthroughPackets
         )
@@ -187,12 +274,20 @@ internal class RtBuddyHeartRateDecoder(
             frame,
             AACP_RTBUDDY_HEADER_LENGTH,
             frame.size
-        ) ?: return FrameClassification()
+        ) ?: return FrameClassification(kind = RtBuddyFrameKind.MALFORMED)
 
         val metadataRecords = updateServiceMetadata(frame, topLevel)
+        val logType = topLevel.firstVarint(FIELD_LOG_TYPE)?.toInt()
+        if (updateAcknowledgements(frame, topLevel)) {
+            return FrameClassification(
+                consumed = true,
+                kind = RtBuddyFrameKind.ACKNOWLEDGEMENT,
+                logType = logType
+            )
+        }
 
         val sequence = topLevel.firstVarint(FIELD_SEQUENCE)?.toInt() ?: -1
-        val logType = topLevel.firstVarint(FIELD_LOG_TYPE)?.toInt() ?: -1
+        val resolvedLogType = logType ?: -1
         val commands = mutableListOf<HeartRateCommand>()
 
         topLevel.fields.forEach { field ->
@@ -212,12 +307,22 @@ internal class RtBuddyHeartRateDecoder(
         }
 
         if (commands.isEmpty()) {
-            return FrameClassification(consumed = metadataRecords.isNotEmpty())
+            return FrameClassification(
+                consumed = metadataRecords.isNotEmpty(),
+                kind = if (metadataRecords.isNotEmpty()) {
+                    RtBuddyFrameKind.METADATA
+                } else {
+                    RtBuddyFrameKind.OTHER
+                },
+                logType = logType
+            )
         }
-        if (logType !in LIVE_SENSOR_DATA_LOG_TYPES) {
+        if (resolvedLogType !in LIVE_SENSOR_DATA_LOG_TYPES) {
             return FrameClassification(
                 related = true,
-                rejectionReason = HeartRateRejectionReason.UNSUPPORTED_LOG_TYPE
+                rejectionReason = HeartRateRejectionReason.UNSUPPORTED_LOG_TYPE,
+                kind = RtBuddyFrameKind.HEART_RATE_REJECTED,
+                logType = logType
             )
         }
 
@@ -229,11 +334,15 @@ internal class RtBuddyHeartRateDecoder(
                     HeartRateRejectionReason.MISSING_HEART_RATE_PAYLOAD
                 } else {
                     HeartRateRejectionReason.UNRECOGNIZED_HEART_RATE_PAYLOAD
-                }
+                },
+                kind = RtBuddyFrameKind.HEART_RATE_REJECTED,
+                logType = logType
             )
 
         return FrameClassification(
             related = true,
+            kind = RtBuddyFrameKind.HEART_RATE_ACCEPTED,
+            logType = logType,
             sample = HeartRateSample(
                 bpm = acceptedPayload.unsignedByteAt(HEART_RATE_BPM_OFFSET),
                 sequence = sequence,
@@ -249,7 +358,9 @@ internal class RtBuddyHeartRateDecoder(
     ): Set<MetadataRecord> {
         val metadataRecords = mutableSetOf<MetadataRecord>()
         topLevel.fields.forEach { field ->
-            if (field.wireType != WIRE_LENGTH_DELIMITED) return@forEach
+            if (field.number != FIELD_SERVICE_RECORD ||
+                field.wireType != WIRE_LENGTH_DELIMITED
+            ) return@forEach
             val serviceRecord = parseProtoMessage(data, field.valueStart, field.valueEnd)
                 ?: return@forEach
             val serviceId = serviceRecord.firstVarint(FIELD_SERVICE)?.toInt()
@@ -280,6 +391,7 @@ internal class RtBuddyHeartRateDecoder(
             when {
                 // A service explicitly named HostLibHID must never be targeted as heart rate.
                 identifiesHostLibHid -> {
+                    discoveredHostLibHidServiceId = serviceId
                     explicitlyNonHeartRateServiceIds += serviceId
                     if (discoveredHeartRateServiceId == serviceId) {
                         discoveredHeartRateServiceId = null
@@ -292,6 +404,28 @@ internal class RtBuddyHeartRateDecoder(
             }
         }
         return metadataRecords
+    }
+
+    private fun updateAcknowledgements(data: ByteArray, topLevel: ProtoMessage): Boolean {
+        if (topLevel.firstVarint(FIELD_LOG_TYPE)?.toInt() != ACKNOWLEDGEMENT_LOG_TYPE ||
+            topLevel.fields.size != ACKNOWLEDGEMENT_FIELD_COUNT
+        ) return false
+
+        var found = false
+        topLevel.fields.forEach { field ->
+            if (field.number != FIELD_ACKNOWLEDGEMENT ||
+                field.wireType != WIRE_LENGTH_DELIMITED
+            ) return@forEach
+
+            val acknowledgement = parseProtoMessage(data, field.valueStart, field.valueEnd)
+                ?: return@forEach
+            if (acknowledgement.fields.size != 1) return@forEach
+            val serviceId = acknowledgement.firstVarint(FIELD_SERVICE)?.toInt()
+                ?: return@forEach
+            acknowledgementCounts[serviceId] = (acknowledgementCounts[serviceId] ?: 0) + 1
+            found = true
+        }
+        return found
     }
 
     private fun collectHeartRateCommands(
@@ -502,7 +636,9 @@ internal class RtBuddyHeartRateDecoder(
         val related: Boolean = false,
         val consumed: Boolean = false,
         val sample: HeartRateSample? = null,
-        val rejectionReason: HeartRateRejectionReason? = null
+        val rejectionReason: HeartRateRejectionReason? = null,
+        val kind: RtBuddyFrameKind,
+        val logType: Int? = null
     )
 
     private companion object {
@@ -527,6 +663,10 @@ internal class RtBuddyHeartRateDecoder(
         const val FIELD_SERVICE = 1
         const val FIELD_SERVICE_METADATA = 2
         const val FIELD_COMMAND_PAYLOAD = 3
+        const val FIELD_SERVICE_RECORD = 5
+        const val FIELD_ACKNOWLEDGEMENT = 9
+        const val ACKNOWLEDGEMENT_LOG_TYPE = 1
+        const val ACKNOWLEDGEMENT_FIELD_COUNT = 3
         const val LEGACY_HEART_RATE_SERVICE = 19
         const val HEART_RATE_PAYLOAD_LENGTH = 18
         const val HEART_RATE_BPM_OFFSET = 1
@@ -579,6 +719,10 @@ internal class RtBuddyHeartRateControlFrames(
     fun stop(serviceId: Int): ByteArray =
         buildFrame(serviceId, takeSequence(), 0)
 
+    @Synchronized
+    fun initializeHostLibHid(serviceId: Int): ByteArray =
+        buildFrame(serviceId, takeSequence(), HOST_LIB_HID_INITIALIZATION)
+
     private fun takeSequence(): Int {
         val sequence = nextSequence
         nextSequence = if (sequence == Int.MAX_VALUE) 0 else sequence + 1
@@ -595,12 +739,22 @@ internal class RtBuddyHeartRateControlFrames(
             0x00, 0x00, 0x10, 0x00
         )
 
+        private val HOST_LIB_HID_INITIALIZATION = byteArrayOf(0x02, 0x00, 0x00, 0x00, 0x00)
+
         internal fun buildFrame(serviceId: Int, sequence: Int, intervalMicros: Int): ByteArray {
+            require(intervalMicros >= 0) { "Heart-rate interval must be non-negative" }
+            return buildFrame(
+                serviceId = serviceId,
+                sequence = sequence,
+                setting = byteArrayOf(0x01) + intervalMicros.toLittleEndian32()
+            )
+        }
+
+        internal fun buildFrame(serviceId: Int, sequence: Int, setting: ByteArray): ByteArray {
             require(serviceId in 1..4_096) { "Invalid RTBuddy service ID: $serviceId" }
             require(sequence >= 0) { "RTBuddy sequence must be non-negative" }
-            require(intervalMicros >= 0) { "Heart-rate interval must be non-negative" }
+            require(setting.size == 5) { "RTBuddy service setting must be exactly five bytes" }
 
-            val setting = byteArrayOf(0x01) + intervalMicros.toLittleEndian32()
             val command =
                 protoVarintField(1, serviceId) +
                     protoVarintField(2, 2) +
@@ -686,6 +840,19 @@ internal class RtBuddyHeartRateControlSession(
     @Synchronized
     fun sendStop(sender: (ByteArray) -> Boolean): HeartRateControlSendResult =
         sendControl(start = false, sender = sender)
+
+    @Synchronized
+    fun sendHostLibHidInitialization(
+        serviceId: Int,
+        sender: (ByteArray) -> Boolean
+    ): HeartRateControlSendResult {
+        return HeartRateControlSendResult(
+            attempted = true,
+            sent = sender(frames.initializeHostLibHid(serviceId)),
+            serviceId = serviceId,
+            discoveredFromMetadata = true
+        )
+    }
 
     @Synchronized
     fun reset() {

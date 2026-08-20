@@ -21,3 +21,13 @@
 #-renamesourcefileattribute SourceFile
 
 -keep class me.kavishdevar.librepods.utils.KotlinModule { *; }
+
+# Python calls these Java methods by their source names through Chaquopy. R8 cannot see those
+# call sites, so release builds must not rename or remove the bridge surface.
+-keepclassmembers class dev.wander.android.opentagviewer.anisette.LocalAnisette {
+    public *;
+}
+-keepclassmembers class me.kavishdevar.librepods.features.findmy.FindMyNetworkAccessoryRequest {
+    public java.lang.String getBeaconId();
+    public java.lang.String getAccessoryJson();
+}

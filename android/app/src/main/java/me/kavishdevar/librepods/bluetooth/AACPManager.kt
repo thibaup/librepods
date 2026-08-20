@@ -311,6 +311,12 @@ class AACPManager {
     private var heartRateDiagnosticRejectedFrames = 0
     private val heartRateDiagnosticRejectionReasons =
         mutableMapOf<HeartRateRejectionReason, Int>()
+    private var heartRateDiagnosticAttemptLabel = "none"
+    private var heartRateDiagnosticAttemptStartedAt = 0L
+    private var heartRateDiagnosticRtBuddyFrames = 0
+    private var heartRateDiagnosticAcceptedSamples = 0
+    private val heartRateDiagnosticFrameKinds = mutableMapOf<RtBuddyFrameKind, Int>()
+    private val heartRateDiagnosticLogTypes = mutableMapOf<Int, Int>()
 
     fun setPacketCallback(callback: PacketCallback) {
         this.callback = callback
@@ -341,20 +347,147 @@ class AACPManager {
 
     fun sendHeartRateStopFrame(): Boolean = sendHeartRateControlFrame(start = false)
 
-    suspend fun awaitHeartRateServiceResolution(timeoutMillis: Long = 1_500L): Boolean {
-        return waitForHeartRateServiceResolution(
+    internal fun isHostLibHidAdvertised(): Boolean =
+        heartRateDecoder.discoveredHostLibHidServiceId() != null
+
+    internal fun isHeartRateServiceMetadataResolved(): Boolean =
+        heartRateDecoder.heartRateServiceResolution().discoveredFromMetadata
+
+    internal fun beginHeartRateDiagnosticAttempt(
+        attemptNumber: Int,
+        strategy: HeartRateStartupStrategy
+    ) {
+        synchronized(heartRateDiagnosticLock) {
+            heartRateDiagnosticAttemptLabel =
+                "attempt-$attemptNumber/${strategy.diagnosticName}"
+            heartRateDiagnosticAttemptStartedAt = SystemClock.elapsedRealtime()
+            heartRateDiagnosticRtBuddyFrames = 0
+            heartRateDiagnosticAcceptedSamples = 0
+            heartRateDiagnosticFrameKinds.clear()
+            heartRateDiagnosticLogTypes.clear()
+            clearHeartRateDiagnosticWindowLocked()
+        }
+        Log.i(
+            TAG,
+            "HR_DIAG attempt-observation-start " +
+                "label=$heartRateDiagnosticAttemptLabel"
+        )
+    }
+
+    internal fun logHeartRateDiagnosticCheckpoint(outcome: String) {
+        val summary = synchronized(heartRateDiagnosticLock) {
+            val kinds = heartRateDiagnosticFrameKinds.toDiagnosticString { it.name.lowercase() }
+            val logTypes = heartRateDiagnosticLogTypes.toDiagnosticString { it.toString() }
+            val rejectedFrames =
+                heartRateDiagnosticFrameKinds[RtBuddyFrameKind.HEART_RATE_REJECTED] ?: 0
+            "label=$heartRateDiagnosticAttemptLabel outcome=$outcome " +
+                "elapsedMs=${SystemClock.elapsedRealtime() - heartRateDiagnosticAttemptStartedAt} " +
+                "rtbuddyFrames=$heartRateDiagnosticRtBuddyFrames " +
+                "acceptedSamples=$heartRateDiagnosticAcceptedSamples " +
+                "rejectedFrames=$rejectedFrames " +
+                "kinds=$kinds logTypes=$logTypes"
+        }
+        Log.i(TAG, "HR_DIAG attempt-observation $summary")
+    }
+
+    suspend fun awaitHeartRateServiceResolution(timeoutMillis: Long = 5_000L): Boolean {
+        val startedAt = SystemClock.elapsedRealtime()
+        val resolved = waitForHeartRateServiceResolution(
             decoder = heartRateDecoder,
             timeoutMillis = timeoutMillis,
             elapsedRealtimeMillis = SystemClock::elapsedRealtime,
             pause = { delay(it) }
         )
+        val resolution = heartRateDecoder.heartRateServiceResolution()
+        val source = when {
+            resolution.serviceId == null -> "unavailable"
+            resolution.discoveredFromMetadata -> "metadata"
+            else -> "legacy"
+        }
+        Log.i(
+            TAG,
+            "HR_DIAG service-resolution resolved=$resolved " +
+                "elapsedMs=${SystemClock.elapsedRealtime() - startedAt} " +
+                "hrService=${resolution.serviceId} " +
+                "hrSource=$source " +
+                "hostLibService=${heartRateDecoder.discoveredHostLibHidServiceId()}"
+        )
+        return resolved
+    }
+
+    internal suspend fun initializeHostLibHid(
+        timeoutMillis: Long = 1_000L
+    ): HostLibHidInitializationOutcome {
+        val serviceId = heartRateDecoder.discoveredHostLibHidServiceId()
+        if (serviceId == null) {
+            Log.i(
+                TAG,
+                "HR_DIAG hostlib-init advertised=false sent=false acknowledged=false " +
+                    "continuing=true"
+            )
+            return HostLibHidInitializationOutcome(
+                serviceId = null,
+                sent = false,
+                acknowledged = false
+            )
+        }
+
+        val acknowledgementCount = heartRateDecoder.acknowledgementCount(serviceId)
+        val startedAt = SystemClock.elapsedRealtime()
+        val result = heartRateControlSession.sendHostLibHidInitialization(
+            serviceId = serviceId,
+            sender = { packet ->
+                logHeartRateOutgoingFrame("hostlib-init", packet)
+                sendPacket(packet)
+            }
+        )
+        if (!result.sent) {
+            Log.w(
+                TAG,
+                "HR_DIAG hostlib-init service=$serviceId sent=false acknowledged=false " +
+                    "ackCountBefore=$acknowledgementCount " +
+                    "ackCountAfter=${heartRateDecoder.acknowledgementCount(serviceId)} " +
+                    "elapsedMs=${SystemClock.elapsedRealtime() - startedAt} continuing=false"
+            )
+            return HostLibHidInitializationOutcome(
+                serviceId = serviceId,
+                sent = false,
+                acknowledged = false
+            )
+        }
+        val acknowledged = waitForRtBuddyAcknowledgement(
+            decoder = heartRateDecoder,
+            serviceId = serviceId,
+            acknowledgementCountBeforeSend = acknowledgementCount,
+            timeoutMillis = timeoutMillis,
+            elapsedRealtimeMillis = SystemClock::elapsedRealtime,
+            pause = { delay(it) }
+        )
+        val acknowledgementCountAfter = heartRateDecoder.acknowledgementCount(serviceId)
+        Log.i(
+            TAG,
+            "HR_DIAG hostlib-init service=$serviceId sent=true acknowledged=$acknowledged " +
+                "ackCountBefore=$acknowledgementCount ackCountAfter=$acknowledgementCountAfter " +
+                "elapsedMs=${SystemClock.elapsedRealtime() - startedAt} continuing=true"
+        )
+        return HostLibHidInitializationOutcome(
+            serviceId = serviceId,
+            sent = true,
+            acknowledged = acknowledged
+        )
     }
 
     private fun sendHeartRateControlFrame(start: Boolean): Boolean {
         val result = if (start) {
-            heartRateControlSession.sendStart(::sendPacket)
+            heartRateControlSession.sendStart { packet ->
+                logHeartRateOutgoingFrame("start", packet)
+                sendPacket(packet)
+            }
         } else {
-            heartRateControlSession.sendStop(::sendPacket)
+            heartRateControlSession.sendStop { packet ->
+                logHeartRateOutgoingFrame("stop", packet)
+                sendPacket(packet)
+            }
         }
         if (!result.attempted) {
             Log.w(
@@ -374,7 +507,20 @@ class AACPManager {
                 "source=${if (result.discoveredFromMetadata) "metadata" else "legacy"} " +
                 "sent=${result.sent}"
         )
+        if (start) {
+            Log.i(
+                TAG,
+                "HR_DIAG start service=${result.serviceId} " +
+                    "source=${if (result.discoveredFromMetadata) "metadata" else "legacy"} " +
+                    "sent=${result.sent}"
+            )
+        }
         return result.sent
+    }
+
+    private fun logHeartRateOutgoingFrame(kind: String, packet: ByteArray) {
+        val frame = packet.joinToString(" ") { "%02X".format(it) }
+        Log.i(TAG, "HR_DIAG outgoing kind=$kind bytes=${packet.size} frame=$frame")
     }
 
     fun sendHeartRateConnectService0(): Boolean = sendPacket(HEART_RATE_CONNECT_SERVICE_0)
@@ -485,11 +631,23 @@ class AACPManager {
     }
 
     private fun recordHeartRateDecodeDiagnostics(result: HeartRateDecodeResult) {
-        if (result.relatedFrameCount == 0) return
-
         var acceptedFirstSample = false
         var rejectionSummary: String? = null
         synchronized(heartRateDiagnosticLock) {
+            heartRateDiagnosticRtBuddyFrames = boundedDiagnosticCount(
+                heartRateDiagnosticRtBuddyFrames,
+                result.rtBuddyFrameCount
+            )
+            heartRateDiagnosticAcceptedSamples = boundedDiagnosticCount(
+                heartRateDiagnosticAcceptedSamples,
+                result.samples.size
+            )
+            result.frameKinds.forEach { (kind, count) ->
+                heartRateDiagnosticFrameKinds.incrementBounded(kind, count)
+            }
+            result.logTypes.forEach { (logType, count) ->
+                heartRateDiagnosticLogTypes.incrementBounded(logType, count)
+            }
             if (result.samples.isNotEmpty() && !heartRateAcceptedSampleLogged) {
                 heartRateAcceptedSampleLogged = true
                 acceptedFirstSample = true
@@ -533,10 +691,23 @@ class AACPManager {
         }
 
         if (acceptedFirstSample) {
-            Log.d(TAG, "Validated first RTBuddy heart-rate sample for this AACP connection")
+            val resolution = heartRateDecoder.heartRateServiceResolution()
+            Log.i(
+                TAG,
+                "HR_DIAG first-decoded-sample service=${resolution.serviceId} " +
+                    "source=${if (resolution.discoveredFromMetadata) "metadata" else "legacy"}"
+            )
         }
-        rejectionSummary?.let { Log.w(TAG, it) }
+        rejectionSummary?.let { Log.w(TAG, "HR_DIAG $it") }
     }
+
+    private fun <K> Map<K, Int>.toDiagnosticString(keyName: (K) -> String): String =
+        if (isEmpty()) {
+            "none"
+        } else {
+            entries.sortedBy { keyName(it.key) }
+                .joinToString(",") { (key, count) -> "${keyName(key)}=$count" }
+        }
 
     private fun boundedDiagnosticCount(current: Int, increment: Int): Int =
         (current.toLong() + increment)
@@ -557,6 +728,12 @@ class AACPManager {
     private fun resetHeartRateDiagnostics() {
         synchronized(heartRateDiagnosticLock) {
             heartRateAcceptedSampleLogged = false
+            heartRateDiagnosticAttemptLabel = "none"
+            heartRateDiagnosticAttemptStartedAt = 0L
+            heartRateDiagnosticRtBuddyFrames = 0
+            heartRateDiagnosticAcceptedSamples = 0
+            heartRateDiagnosticFrameKinds.clear()
+            heartRateDiagnosticLogTypes.clear()
             clearHeartRateDiagnosticWindowLocked()
         }
     }
@@ -1444,6 +1621,25 @@ class AACPManager {
     fun disconnected() {
         Log.d(TAG, "Disconnected, clearing state")
         heartRateDecoder.reset()
+        heartRateControlSession.reset()
+        resetHeartRateDiagnostics()
+        controlCommandStatusList.clear()
+        controlCommandListeners.clear()
+        owns = false
+        oldConnectedDevices = listOf()
+        connectedDevices = listOf()
+        audioSource = null
+    }
+
+    /**
+     * Reset state tied to a dead AACP socket while retaining service-role metadata that was
+     * learned from this accessory.  Some firmware advertises HeartRateService/HostLibHID only
+     * once, so clearing that mapping during a transport-only reconnect makes service 19 look like
+     * heart rate even when it was explicitly HostLibHID and service 20 was the real HR service.
+     */
+    fun transportDisconnected() {
+        Log.d(TAG, "AACP transport disconnected, preserving service metadata")
+        heartRateDecoder.resetForTransportReconnect()
         heartRateControlSession.reset()
         resetHeartRateDiagnostics()
         controlCommandStatusList.clear()

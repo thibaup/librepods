@@ -145,6 +145,19 @@
     <string name="show_bottom_sheet_popup_description">Show the iOS-style modal popup at the bottom when AirPods connect.</string>
     <string name="show_island_popup">Dynamic Island popup</string>
     <string name="show_island_popup_description">Show the Dynamic Island-style popup at the top for connection and takeover events.</string>
+    <string name="notification_announcements">Notification announcements</string>
+    <string name="announce_notifications">Announce notifications</string>
+    <string name="announce_notifications_description">Read notifications aloud through connected AirPods only for apps you select.</string>
+    <string name="notification_access">Notification access</string>
+    <string name="notification_access_description">Allow LibrePods to read notifications from selected apps for announcements.</string>
+    <string name="select_announcement_apps">Select apps</string>
+    <string name="selected_app_count">%1$d apps selected</string>
+    <string name="search_apps">Search apps</string>
+    <string name="done">Done</string>
+    <string name="announcement_handling_pause">Pause playback while speaking</string>
+    <string name="announcement_handling_pause_description">Pause the active media session and resume only when LibrePods paused it and playback was not changed meanwhile.</string>
+    <string name="announcement_handling_duck">Duck media while speaking</string>
+    <string name="announcement_handling_duck_description">Temporarily lower media volume and restore it only if the volume still matches the value LibrePods set.</string>
     <string name="conversational_awareness_volume">Conversational Awareness Volume</string>
     <string name="quick_settings_tile">Quick Settings Tile</string>
     <string name="open_dialog_for_controlling">Open dialog for controlling</string>
@@ -248,10 +261,10 @@
         Many devices are not supported due to limitations in the Android Bluetooth stack.
         \nOn these devices, root access with an Xposed framework is required for full functionality.
         \n\nThis limitation has been addressed in newer Android versions. The following device configurations can run the app natively:
-        \n• Google Pixel® running Android 16 March update and later with the lateset Play system update
-        \n• Google Pixel® running 17 Beta 3 and above
-        \n• OnePlus devices running OxygenOS 16 or later
-        \n• Oppo devices running ColorOS 16 or later
+        \nâ€¢ Google PixelÂ® running Android 16 March update and later with the lateset Play system update
+        \nâ€¢ Google PixelÂ® running 17 Beta 3 and above
+        \nâ€¢ OnePlus devices running OxygenOS 16 or later
+        \nâ€¢ Oppo devices running ColorOS 16 or later
         \n\nFor details, see the project documentation.
     </string>
     <string name="name_your_own_price">(Name your own price)</string>

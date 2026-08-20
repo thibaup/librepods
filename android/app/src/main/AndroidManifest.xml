@@ -34,7 +34,7 @@
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-<!--    <uses-permission android:name="android.permission.INTERNET" />-->
+    <uses-permission android:name="android.permission.INTERNET" />
 <!--    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"-->
 <!--        android:maxSdkVersion="30" />-->
 <!--    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"-->
@@ -45,6 +45,10 @@
 
     <queries>
         <package android:name="com.google.android.apps.healthdata" />
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
     </queries>
 
     <application
@@ -137,6 +141,15 @@
             android:exported="true"
             android:foregroundServiceType="connectedDevice"
             android:permission="android.permission.BLUETOOTH_CONNECT" />
+        <service
+            android:name=".services.NotificationAnnouncementService"
+            android:label="@string/notification_announcements"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
         <service
             android:name=".services.AirPodsQSService"
             android:exported="true"

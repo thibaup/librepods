@@ -5,15 +5,19 @@
 -->
 <data-extraction-rules>
     <cloud-backup>
+        <exclude domain="sharedpref" path="find_my_secure_session.xml" />
+        <exclude domain="sharedpref" path="find_my_network_secure_state.xml" />
+        <exclude domain="sharedpref" path="anisette-identity.xml" />
+        <exclude domain="file" path="anisette/" />
         <!-- TODO: Use <include> and <exclude> to control what is backed up.
         <include .../>
         <exclude .../>
         -->
     </cloud-backup>
-    <!--
     <device-transfer>
-        <include .../>
-        <exclude .../>
+        <exclude domain="sharedpref" path="find_my_secure_session.xml" />
+        <exclude domain="sharedpref" path="find_my_network_secure_state.xml" />
+        <exclude domain="sharedpref" path="anisette-identity.xml" />
+        <exclude domain="file" path="anisette/" />
     </device-transfer>
-    -->
 </data-extraction-rules>

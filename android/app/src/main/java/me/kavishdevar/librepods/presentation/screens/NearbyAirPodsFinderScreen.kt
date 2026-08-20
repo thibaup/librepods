@@ -29,15 +29,21 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -45,6 +51,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import me.kavishdevar.librepods.finder.NearbyFinderState
 import me.kavishdevar.librepods.finder.NearbyFinderStatus
+import me.kavishdevar.librepods.finder.NearbySoundStatus
 import me.kavishdevar.librepods.finder.ProximityBucket
 import me.kavishdevar.librepods.presentation.theme.DesignSystem
 import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
@@ -55,6 +62,7 @@ import kotlin.math.roundToInt
 fun NearbyAirPodsFinderScreen(viewModel: AirPodsViewModel) {
     val uiState by viewModel.uiState.collectAsState()
     val finder = uiState.nearbyFinder
+    var pendingUnverifiedTargetGeneration by remember { mutableStateOf<Long?>(null) }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) {
@@ -63,6 +71,36 @@ fun NearbyAirPodsFinderScreen(viewModel: AirPodsViewModel) {
 
     DisposableEffect(Unit) {
         onDispose { viewModel.stopNearbyFinder() }
+    }
+
+    pendingUnverifiedTargetGeneration?.let { confirmedGeneration ->
+        AlertDialog(
+            onDismissRequest = { pendingUnverifiedTargetGeneration = null },
+            title = { Text("Play a nearby tracker sound?") },
+            text = {
+                Text(
+                    "This separated AirPods advertisement cannot be cryptographically matched " +
+                        "to the AirPods selected in LibrePods. It may belong to someone else. " +
+                        "Continue only when you are identifying a tracker near you."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingUnverifiedTargetGeneration = null
+                        viewModel.playNearbySound(
+                            allowUnverifiedTarget = true,
+                            expectedTargetGeneration = confirmedGeneration
+                        )
+                    }
+                ) { Text("Play sound") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingUnverifiedTargetGeneration = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     val materialDesign = LocalDesignSystem.current == DesignSystem.Material
@@ -137,8 +175,106 @@ fun NearbyAirPodsFinderScreen(viewModel: AirPodsViewModel) {
         )
 
         Spacer(modifier = Modifier.height(18.dp))
+        NearbySoundCard(
+            finder = finder,
+            onPlaySound = {
+                if (finder.soundTargetIdentityVerified) {
+                    viewModel.playNearbySound(
+                        expectedTargetGeneration = finder.soundTargetGeneration
+                    )
+                } else {
+                    pendingUnverifiedTargetGeneration = finder.soundTargetGeneration
+                }
+            },
+            onStopSound = viewModel::stopNearbySound
+        )
+        Spacer(modifier = Modifier.height(18.dp))
         SignalDebugCard(finder)
         Spacer(modifier = Modifier.height(bottomPadding))
+    }
+}
+
+@Composable
+private fun NearbySoundCard(
+    finder: NearbyFinderState,
+    onPlaySound: () -> Unit,
+    onStopSound: () -> Unit
+) {
+    val sound = finder.sound
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                "Nearby sound",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                sound.message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (sound.status == NearbySoundStatus.FAILED) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+            if (sound.canStart && !finder.soundTargetIdentityVerified) {
+                Text(
+                    "Identity not verified: this is the strongest compatible separated " +
+                        "advertisement nearby, not necessarily your selected AirPods.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            sound.protocol?.let { protocol ->
+                DebugRow("Protocol", protocol.label)
+            }
+            if (sound.busy) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            if (sound.busy) {
+                OutlinedButton(
+                    onClick = onStopSound,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (sound.status == NearbySoundStatus.PLAYING) "Stop sound" else "Cancel")
+                }
+            } else {
+                Button(
+                    onClick = onPlaySound,
+                    enabled = finder.running && finder.soundTargetFresh && sound.canStart,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        if (sound.status == NearbySoundStatus.COMPLETED ||
+                            sound.status == NearbySoundStatus.FAILED
+                        ) {
+                            "Try sound again"
+                        } else {
+                            "Play sound nearby"
+                        }
+                    )
+                }
+            }
+            if (sound.canStart && !finder.soundTargetFresh) {
+                Text(
+                    "Waiting for a fresh advertisement before retrying.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Text(
+                "Experimental: this uses the local tracker-safety Bluetooth service. It only works in range when the AirPods expose a separated Find My mode.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 

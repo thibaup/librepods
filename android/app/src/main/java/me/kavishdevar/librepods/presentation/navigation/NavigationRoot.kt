@@ -65,6 +65,7 @@ fun NavigationRoot(
         is Screen.WorkoutDetail -> "Workout details"
         Screen.WorkoutSettings -> "Workout zones"
         Screen.NearbyFinder -> "Find Nearby"
+        Screen.FindMy -> "Find My"
         Screen.HearingAid -> stringResource(R.string.hearing_aid)
         Screen.HearingAidAdjustments -> stringResource(R.string.adjustments)
         Screen.HearingProtection -> stringResource(R.string.hearing_protection)

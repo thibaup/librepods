@@ -22,6 +22,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import me.kavishdevar.librepods.bluetooth.HeartRateSample
+import me.kavishdevar.librepods.bluetooth.HeartRateStartupStrategy
+import me.kavishdevar.librepods.bluetooth.HostLibHidInitializationOutcome
+
+internal fun shouldRetryHeartRateInCurrentAacpSession(
+    hostLibHidAdvertised: Boolean
+): Boolean = hostLibHidAdvertised
 
 /**
  * Owns the heart-rate stream lifecycle and its user-visible state.
@@ -40,10 +46,15 @@ internal class HeartRateMonitor(
     private val sendConnectService4: () -> Boolean,
     private val sendCapabilitiesService4: () -> Boolean,
     private val awaitHeartRateService: suspend () -> Boolean,
+    private val isHostLibHidAdvertised: () -> Boolean,
+    private val isHeartRateServiceMetadataResolved: () -> Boolean,
+    private val initializeHostLibHid: suspend () -> HostLibHidInitializationOutcome,
     private val enableHeartRate: () -> Boolean,
     private val sendStart: () -> Boolean,
     private val sendStop: () -> Unit,
     private val requestTransportRecovery: () -> Boolean,
+    private val beginDiagnosticAttempt: (Int, HeartRateStartupStrategy) -> Unit,
+    private val logDiagnosticCheckpoint: (String) -> Unit,
     private val onPublishedSample: (HeartRateSample) -> Unit
 ) {
     private enum class RefreshReason(val diagnosticName: String) {
@@ -175,6 +186,7 @@ internal class HeartRateMonitor(
     private suspend fun runMonitoringLoop() {
         val currentJob = kotlinx.coroutines.currentCoroutineContext()[Job]
         var refreshWindow: RefreshWindow? = null
+        var diagnosticAttemptNumber = 0
 
         try {
             beforeFirstStart()
@@ -188,7 +200,12 @@ internal class HeartRateMonitor(
                     }
                 )
 
-                val attemptStartedAt = startStreamAttempt()
+                diagnosticAttemptNumber++
+                val strategy = HeartRateStartupStrategy.forAttempt(diagnosticAttemptNumber)
+                val attemptStartedAt = startStreamAttempt(
+                    attemptNumber = diagnosticAttemptNumber,
+                    strategy = strategy
+                )
                 if (!canRun()) return
                 if (attemptStartedAt != null) {
                     refreshWindow?.deadlineElapsedRealtime =
@@ -201,6 +218,8 @@ internal class HeartRateMonitor(
                     awaitStreamFailure(
                         attemptStartedAt = attemptStartedAt,
                         refreshDeadline = refreshWindow?.deadlineElapsedRealtime,
+                        attemptNumber = diagnosticAttemptNumber,
+                        strategy = strategy,
                         onStreamStarted = { refreshWindow = null }
                     ) ?: return
                 }
@@ -220,21 +239,24 @@ internal class HeartRateMonitor(
                     )
                 }
 
+                if (!shouldRetryHeartRateInCurrentAacpSession(isHostLibHidAdvertised())) {
+                    Log.w(
+                        TAG,
+                        "HR_DIAG same-session-retry skipped=true " +
+                            "reason=hostlib-not-advertised " +
+                            "metadataResolved=${isHeartRateServiceMetadataResolved()}"
+                    )
+                    requestRecoveryOrFinish()
+                    return
+                }
+
                 if (!waitForRetry(window)) {
                     Log.w(
                         TAG,
                         "RTBuddy heart-rate refresh failed " +
                             "reason=${window.reason.diagnosticName} attempts=${window.attempts}"
                     )
-                    updateStatus(HeartRateMonitoringStatus.RECONNECTING)
-                    if (requestTransportRecovery()) {
-                        Log.i(TAG, "Requesting one automatic AACP rebuild for heart-rate recovery")
-                    } else if (!canRun()) {
-                        return
-                    } else {
-                        updateStatus(HeartRateMonitoringStatus.COULDNT_START)
-                        Log.i(TAG, "Automatic AACP rebuild unavailable; waiting for manual Retry")
-                    }
+                    requestRecoveryOrFinish()
                     return
                 }
             }
@@ -248,16 +270,44 @@ internal class HeartRateMonitor(
         }
     }
 
-    private suspend fun startStreamAttempt(): Long? {
+    private suspend fun startStreamAttempt(
+        attemptNumber: Int,
+        strategy: HeartRateStartupStrategy
+    ): Long? {
         drainIncomingSamples()
-        if (!initializeAacpSession()) return null
-        if (!awaitHeartRateService()) return null
+        beginDiagnosticAttempt(attemptNumber, strategy)
+        Log.i(
+            TAG,
+            "HR_DIAG attempt-start id=$attemptNumber strategy=${strategy.diagnosticName} " +
+                "transport=${isTransportReady()} worn=${isAirPodsWorn()}"
+        )
+        if (!initializeAacpSession(attemptNumber, strategy)) {
+            logDiagnosticCheckpoint("aacp-init-failed")
+            return null
+        }
+        if (!awaitHeartRateService()) {
+            logDiagnosticCheckpoint("service-resolution-failed")
+            return null
+        }
+        if (strategy == HeartRateStartupStrategy.HOSTLIB_ASSISTED) {
+            val hostLibInitialization = initializeHostLibHid()
+            if (!hostLibInitialization.canContinue) {
+                logDiagnosticCheckpoint("hostlib-send-failed")
+                return null
+            }
+        } else {
+            Log.i(TAG, "HR_DIAG hostlib-init strategy=direct skipped=true")
+        }
         val enabled = synchronized(lock) {
             canRun() && enableHeartRate().also { sent ->
                 if (sent) sessionNeedsStop = true
             }
         }
-        if (!enabled) return null
+        Log.i(TAG, "HR_DIAG hrm-state sent=$enabled")
+        if (!enabled) {
+            logDiagnosticCheckpoint("hrm-state-send-failed")
+            return null
+        }
 
         delay(START_COMMAND_DELAY_MILLIS)
 
@@ -269,22 +319,37 @@ internal class HeartRateMonitor(
                 val started = sendStart()
                 acceptingSamples = started
                 sessionNeedsStop = sessionNeedsStop || started
-                Log.d(TAG, "RTBuddy heart-rate start sent=$started")
+                Log.i(
+                    TAG,
+                    "HR_DIAG start-dispatch id=$attemptNumber " +
+                        "strategy=${strategy.diagnosticName} sent=$started"
+                )
+                if (!started) logDiagnosticCheckpoint("start-send-failed")
                 startedAt.takeIf { started }
             }
         }
     }
 
-    private suspend fun initializeAacpSession(): Boolean {
+    private suspend fun initializeAacpSession(
+        attemptNumber: Int,
+        strategy: HeartRateStartupStrategy
+    ): Boolean {
         val frames = listOf(
-            sendConnectService0 to 180L,
-            sendCapabilitiesService0 to 220L,
-            sendConnectService4 to 180L,
-            sendCapabilitiesService4 to 220L
+            Triple("connect-service-0", sendConnectService0, 180L),
+            Triple("capabilities-service-0", sendCapabilitiesService0, 220L),
+            Triple("connect-service-4", sendConnectService4, 180L),
+            Triple("capabilities-service-4", sendCapabilitiesService4, 220L)
         )
 
-        for ((sendFrame, delayAfter) in frames) {
-            if (!sendIfRunning(sendFrame)) return false
+        for ((stage, sendFrame, delayAfter) in frames) {
+            val startedAt = SystemClock.elapsedRealtime()
+            val sent = sendIfRunning(sendFrame)
+            Log.i(
+                TAG,
+                "HR_DIAG init-frame id=$attemptNumber strategy=${strategy.diagnosticName} " +
+                    "stage=$stage sent=$sent elapsedMs=${SystemClock.elapsedRealtime() - startedAt}"
+            )
+            if (!sent) return false
             delay(delayAfter)
         }
 
@@ -295,10 +360,15 @@ internal class HeartRateMonitor(
     private suspend fun awaitStreamFailure(
         attemptStartedAt: Long,
         refreshDeadline: Long?,
+        attemptNumber: Int,
+        strategy: HeartRateStartupStrategy,
         onStreamStarted: () -> Unit
     ): RefreshReason? {
         var warmupSamplesRemaining = WARMUP_SAMPLE_COUNT
         var streamStarted = false
+        var validatedSampleCount = 0
+        var publishedSampleCount = 0
+        var previousSampleElapsedRealtime: Long? = null
         val firstSampleDeadline = refreshDeadline
             ?: (attemptStartedAt + FIRST_SAMPLE_TIMEOUT_MILLIS)
 
@@ -308,18 +378,57 @@ internal class HeartRateMonitor(
             } else {
                 (firstSampleDeadline - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
             }
-            if (timeout == 0L) return RefreshReason.FIRST_SAMPLE_TIMEOUT
+            if (timeout == 0L) {
+                Log.w(
+                    TAG,
+                    "HR_DIAG stream-failure reason=first-sample-timeout " +
+                        "elapsedFromStartMs=${SystemClock.elapsedRealtime() - attemptStartedAt}"
+                )
+                logDiagnosticCheckpoint("first-sample-timeout")
+                return RefreshReason.FIRST_SAMPLE_TIMEOUT
+            }
 
             val sample = withTimeoutOrNull(timeout) { incomingSamples.receive() }
-                ?: return if (streamStarted) {
+            if (sample == null) {
+                val reason = if (streamStarted) {
                     RefreshReason.STREAM_STALLED
                 } else {
                     RefreshReason.FIRST_SAMPLE_TIMEOUT
                 }
+                Log.w(
+                    TAG,
+                    "HR_DIAG stream-failure reason=${reason.diagnosticName} " +
+                        "elapsedFromStartMs=${SystemClock.elapsedRealtime() - attemptStartedAt}"
+                )
+                logDiagnosticCheckpoint(reason.diagnosticName)
+                return reason
+            }
 
             if (!canRun()) return null
+            validatedSampleCount++
+            val intervalMillis = previousSampleElapsedRealtime?.let {
+                sample.receivedAtElapsedRealtime - it
+            }
+            previousSampleElapsedRealtime = sample.receivedAtElapsedRealtime
+            if (validatedSampleCount <= SAMPLE_DIAGNOSTIC_INITIAL_COUNT ||
+                validatedSampleCount % SAMPLE_DIAGNOSTIC_PERIOD == 0
+            ) {
+                Log.i(
+                    TAG,
+                    "HR_DIAG sample-flow id=$attemptNumber " +
+                        "strategy=${strategy.diagnosticName} validated=$validatedSampleCount " +
+                        "intervalMs=${intervalMillis ?: -1} " +
+                        "warmupRemaining=$warmupSamplesRemaining published=$publishedSampleCount"
+                )
+            }
             if (!streamStarted) {
                 streamStarted = true
+                Log.i(
+                    TAG,
+                    "HR_DIAG first-sample received=true " +
+                        "elapsedFromStartMs=${sample.receivedAtElapsedRealtime - attemptStartedAt}"
+                )
+                logDiagnosticCheckpoint("first-sample")
                 if (refreshDeadline != null) {
                     Log.i(TAG, "RTBuddy heart-rate reconnect succeeded")
                 }
@@ -332,6 +441,15 @@ internal class HeartRateMonitor(
             }
 
             publish(sample)
+            publishedSampleCount++
+            if (publishedSampleCount == 1) {
+                Log.i(
+                    TAG,
+                    "HR_DIAG first-published-sample id=$attemptNumber " +
+                        "strategy=${strategy.diagnosticName} validated=$validatedSampleCount"
+                )
+                logDiagnosticCheckpoint("first-published-sample")
+            }
             updateStatus(HeartRateMonitoringStatus.LIVE)
         }
         return null
@@ -348,6 +466,16 @@ internal class HeartRateMonitor(
                 "reason=${window.reason.diagnosticName} timeout=${FIRST_SAMPLE_TIMEOUT_MILLIS}ms"
         )
         return canRun()
+    }
+
+    private fun requestRecoveryOrFinish() {
+        updateStatus(HeartRateMonitoringStatus.RECONNECTING)
+        if (requestTransportRecovery()) {
+            Log.i(TAG, "Requesting one automatic AACP rebuild for heart-rate recovery")
+        } else if (canRun()) {
+            updateStatus(HeartRateMonitoringStatus.COULDNT_START)
+            Log.i(TAG, "Automatic AACP rebuild unavailable; waiting for manual Retry")
+        }
     }
 
     private fun publish(sample: HeartRateSample) {
@@ -395,9 +523,11 @@ internal class HeartRateMonitor(
         const val MAX_SAMPLES = 60
         const val FIRST_SAMPLE_TIMEOUT_MILLIS = 8_000L
         const val RECONNECT_WINDOW_MILLIS = FIRST_SAMPLE_TIMEOUT_MILLIS
-        const val STALL_TIMEOUT_MILLIS = 2_000L
+        const val STALL_TIMEOUT_MILLIS = 5_000L
         const val START_COMMAND_DELAY_MILLIS = 120L
         const val WARMUP_SAMPLE_COUNT = 4
         const val MAX_RECONNECT_ATTEMPTS = 1
+        const val SAMPLE_DIAGNOSTIC_INITIAL_COUNT = 8
+        const val SAMPLE_DIAGNOSTIC_PERIOD = 10
     }
 }

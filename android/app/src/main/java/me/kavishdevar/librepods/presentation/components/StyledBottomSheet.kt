@@ -31,12 +31,16 @@ fun StyledBottomSheet(
     visible: Boolean,
     onDismiss: () -> Unit,
     backdrop: LayerBackdrop,
+    skipPartiallyExpanded: Boolean = false,
+    gesturesEnabled: Boolean = true,
     content: @Composable (innerBackdrop: LayerBackdrop, progress: Float) -> Unit
 ) {
     if (!visible) return
 
     val isDarkTheme = isSystemInDarkTheme()
-    val sheetState = rememberModalBottomSheetState(false) // move this to parent composable
+    val sheetState = rememberModalBottomSheetState(
+        skipPartiallyExpanded = skipPartiallyExpanded
+    ) // move this to parent composable
 
     val isExpanded =  sheetState.targetValue == SheetValue.Expanded
 
@@ -50,6 +54,7 @@ fun StyledBottomSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
+        sheetGesturesEnabled = gesturesEnabled,
         containerColor = Color.Transparent,
         dragHandle = { },
         shape = RoundedCornerShape(animatedCorner),

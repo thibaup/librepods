@@ -36,6 +36,9 @@ data class AppSettingsUiState(
     val connectionSuccessful: Boolean = false,
     val showBottomSheetPopup: Boolean = true,
     val showIslandPopup: Boolean = true,
+    val announceNotificationsEnabled: Boolean = false,
+    val notificationAnnouncementPackages: Set<String> = emptySet(),
+    val notificationAnnouncementMode: String = "pause",
     val timeUntilFOSSPremiumExpiry: Long = 0L,
     val m3eEnabled: Boolean = false
 )
@@ -152,6 +155,9 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
                 connectionSuccessful = sharedPreferences.getBoolean("connection_successful", false),
                 showBottomSheetPopup = sharedPreferences.getBoolean("show_bottom_sheet_popup", true),
                 showIslandPopup = sharedPreferences.getBoolean("show_island_popup", true),
+                announceNotificationsEnabled = sharedPreferences.getBoolean("announce_notifications_enabled", false),
+                notificationAnnouncementPackages = sharedPreferences.getStringSet("notification_announcement_packages", emptySet())?.toSet() ?: emptySet(),
+                notificationAnnouncementMode = sharedPreferences.getString("notification_announcement_mode", "pause") ?: "pause",
                 m3eEnabled = sharedPreferences.getBoolean("m3e_enabled", true)
             )
         }
@@ -251,6 +257,23 @@ class AppSettingsViewModel(application: Application) : AndroidViewModel(applicat
     fun setShowIslandPopup(enabled: Boolean) {
         sharedPreferences.edit { putBoolean("show_island_popup", enabled) }
         _uiState.update { it.copy(showIslandPopup = enabled) }
+    }
+
+    fun setAnnounceNotificationsEnabled(enabled: Boolean) {
+        sharedPreferences.edit { putBoolean("announce_notifications_enabled", enabled) }
+        _uiState.update { it.copy(announceNotificationsEnabled = enabled) }
+    }
+
+    fun setNotificationAnnouncementMode(mode: String) {
+        val normalized = if (mode == "duck") "duck" else "pause"
+        sharedPreferences.edit { putString("notification_announcement_mode", normalized) }
+        _uiState.update { it.copy(notificationAnnouncementMode = normalized) }
+    }
+
+    fun setNotificationAnnouncementPackages(packages: Set<String>) {
+        val snapshot = packages.toSet()
+        sharedPreferences.edit { putStringSet("notification_announcement_packages", snapshot) }
+        _uiState.update { it.copy(notificationAnnouncementPackages = snapshot) }
     }
 
     fun setm3eEnabled(enabled: Boolean) {

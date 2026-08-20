@@ -23,6 +23,7 @@ import me.kavishdevar.librepods.presentation.screens.AirPodsSettingsRoute
 import me.kavishdevar.librepods.presentation.screens.AppSettingsScreen
 import me.kavishdevar.librepods.presentation.screens.CallControlScreen
 import me.kavishdevar.librepods.presentation.screens.EqualizerRoute
+import me.kavishdevar.librepods.presentation.screens.FindMyScreen
 import me.kavishdevar.librepods.presentation.screens.HeadTrackingScreen
 import me.kavishdevar.librepods.presentation.screens.HeartRateTestScreen
 import me.kavishdevar.librepods.presentation.screens.HearingAidAdjustmentsScreen
@@ -118,6 +119,7 @@ fun AppNavGraph(
                                 navigateToCallControlScreen = { navigate(Screen.CallControl(it)) },
                                 navigateToMicrophoneSettings = { navigate(Screen.MicrophoneSettings) },
                                 navigateToHeartRateTest = { navigate(Screen.HeartRateTest) },
+                                navigateToFindMy = { navigate(Screen.FindMy) },
                                 navigateToNearbyFinder = { navigate(Screen.NearbyFinder) },
                             )
                         }
@@ -196,6 +198,11 @@ fun AppNavGraph(
                         NavEntry(screen) {
                             if (!airPodsViewModel.isReady) LoadingScreen()
                             NearbyAirPodsFinderScreen(airPodsViewModel)
+                        }
+
+                    Screen.FindMy ->
+                        NavEntry(screen) {
+                            FindMyScreen()
                         }
 
                     Screen.Accessibility ->

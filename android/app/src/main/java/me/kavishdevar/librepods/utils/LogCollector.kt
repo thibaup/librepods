@@ -19,6 +19,7 @@
 package me.kavishdevar.librepods.utils
 
 import android.content.Context
+import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
@@ -67,9 +68,9 @@ class LogCollector(private val context: Context) {
     private suspend fun getPackageUIDs(): Pair<String?, String?> {
         return withContext(Dispatchers.IO) {
             val btUid = getBluetoothUID()
-            val appUid = executeRootCommand("dumpsys package me.kavishdevar.librepods | grep -m 1 \"uid=\" | sed -E 's/.*uid=([0-9]+).*/\\1/'")
-                .trim()
-                .takeIf { it.isNotEmpty() }
+            // Process.myUid() always matches the installed flavor, including the coexist
+            // applicationId suffix. A hard-coded package lookup silently excluded coexist logs.
+            val appUid = android.os.Process.myUid().toString()
 
             Pair(btUid, appUid)
         }
@@ -186,8 +187,8 @@ class LogCollector(private val context: Context) {
                 LogMarkerType.CUSTOM -> "<LogCollector:Custom:$details> [$timestamp]"
             }
 
-            val command = "log -t AirPodsService \"$marker\""
-            executeRootCommand(command)
+            // Emit from the app UID so the marker survives the UID-filtered logcat collection.
+            Log.i("AirPodsService", marker)
         }
     }
 

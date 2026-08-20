@@ -53,6 +53,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.MaterialTheme
@@ -147,6 +149,7 @@ fun AirPodsSettingsRoute(
     navigateToCallControlScreen: (action: String) -> Unit,
     navigateToMicrophoneSettings: () -> Unit,
     navigateToHeartRateTest: () -> Unit,
+    navigateToFindMy: () -> Unit,
     navigateToNearbyFinder: () -> Unit
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -194,6 +197,7 @@ fun AirPodsSettingsRoute(
             navigateToCallControlScreen = navigateToCallControlScreen,
             navigateToMicrophoneSettings = navigateToMicrophoneSettings,
             navigateToHeartRateTest = navigateToHeartRateTest,
+            navigateToFindMy = navigateToFindMy,
             navigateToNearbyFinder = navigateToNearbyFinder,
 
             setHeartRateMonitoringEnabled = viewModel::setHeartRateMonitoringEnabled,
@@ -241,6 +245,7 @@ fun AirPodsSettingsScreen(
         navigateToCallControlScreen: (action: String) -> Unit,
         navigateToMicrophoneSettings: () -> Unit,
         navigateToHeartRateTest: () -> Unit,
+        navigateToFindMy: () -> Unit,
         navigateToNearbyFinder: () -> Unit,
 
         setHeartRateMonitoringEnabled: (Boolean) -> Unit,
@@ -257,6 +262,7 @@ fun AirPodsSettingsScreen(
             )
         )
     }
+    var findMyMenuOpen by remember { mutableStateOf(false) }
 
     val nameChangeListener = remember {
         SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -340,11 +346,32 @@ fun AirPodsSettingsScreen(
                 )
             }
             item(key = "spacer_nearby_finder") { Spacer(modifier = Modifier.height(16.dp)) }
-            item(key = "nearby_finder") {
-                StyledListItem(
-                    name = "Find Nearby",
-                    onClick = navigateToNearbyFinder
-                )
+            item(key = "find_my") {
+                Box {
+                    StyledListItem(
+                        name = "Find My",
+                        onClick = { findMyMenuOpen = true },
+                    )
+                    DropdownMenu(
+                        expanded = findMyMenuOpen,
+                        onDismissRequest = { findMyMenuOpen = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Apple Find My") },
+                            onClick = {
+                                findMyMenuOpen = false
+                                navigateToFindMy()
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Find Nearby") },
+                            onClick = {
+                                findMyMenuOpen = false
+                                navigateToNearbyFinder()
+                            },
+                        )
+                    }
+                }
             }
             val hasHeartRateCapability =
                 state.instance?.model?.capabilities?.contains(Capability.HRM) == true
@@ -959,6 +986,22 @@ fun AirPodsSettingsScreen(
                     }
                 }
             }
+
+            StyledButton(
+                onClick = navigateToFindMy,
+                backdrop = backdrop,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(start = 16.dp, top = topPadding + 16.dp, end = 16.dp)
+                    .fillMaxWidth()
+                    .widthIn(max = 240.dp),
+                materialButtonStyle = MaterialButtonStyle.Outlined,
+            ) {
+                Text(
+                    text = "Apple Find My",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
         }
     }
 }
@@ -1002,6 +1045,7 @@ fun AirPodsSettingsScreenPreviewApple() {
                 navigateToCallControlScreen = {},
                 navigateToMicrophoneSettings = {},
                 navigateToHeartRateTest = {},
+                navigateToFindMy = {},
                 navigateToNearbyFinder = {},
 
                 setHeartRateMonitoringEnabled = {},
@@ -1054,6 +1098,7 @@ fun AirPodsSettingsScreenPreviewMaterial() {
                 navigateToCallControlScreen = {},
                 navigateToMicrophoneSettings = {},
                 navigateToHeartRateTest = {},
+                navigateToFindMy = {},
                 navigateToNearbyFinder = {},
 
                 setHeartRateMonitoringEnabled = {},

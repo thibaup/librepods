@@ -6,6 +6,10 @@
    See https://developer.android.com/about/versions/12/backup-restore
 -->
 <full-backup-content>
+    <exclude domain="sharedpref" path="find_my_secure_session.xml" />
+    <exclude domain="sharedpref" path="find_my_network_secure_state.xml" />
+    <exclude domain="sharedpref" path="anisette-identity.xml" />
+    <exclude domain="file" path="anisette/" />
     <!--
    <include domain="sharedpref" path="."/>
    <exclude domain="sharedpref" path="device.xml"/>

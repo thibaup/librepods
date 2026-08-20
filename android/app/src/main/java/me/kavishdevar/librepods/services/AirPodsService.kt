@@ -1,5 +1,5 @@
 /*
-    LibrePods - AirPods liberated from Apple’s ecosystem
+    LibrePods - AirPods liberated from Appleâ€™s ecosystem
     Copyright (C) 2025 LibrePods contributors
 
     This program is free software: you can redistribute it and/or modify
@@ -164,7 +164,6 @@ object ServiceManager {
         this.service = service
     }
 }
-
 // @Suppress("unused")
 class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeListener {
     var macAddress = ""
@@ -175,6 +174,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     var cameraActive = false
     private var disconnectedBecauseReversed = false
     private var otherDeviceTookOver = false
+    @Volatile
+    private var currentAirPodsA2dpConnected = false
 
     data class ServiceConfig(
         var deviceName: String = "AirPods",
@@ -412,8 +413,20 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             Log.d(TAG, "Battery changed")
         }
 
-        override fun onVerifiedRssi(rssi: Int) {
-            if (::nearbyFinder.isInitialized) nearbyFinder.onVerifiedScanRssi(rssi)
+        override fun onVerifiedRssi(
+            device: BluetoothDevice,
+            rssi: Int,
+            connectable: Boolean,
+            selectedDeviceIdentityVerified: Boolean
+        ) {
+            if (::nearbyFinder.isInitialized) {
+                nearbyFinder.onVerifiedScanRssi(
+                    device,
+                    rssi,
+                    connectable,
+                    selectedDeviceIdentityVerified
+                )
+            }
         }
 
         override fun onScanError(errorCode: Int) {
@@ -487,6 +500,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             sendConnectService4 = aacpManager::sendHeartRateConnectService4,
             sendCapabilitiesService4 = aacpManager::sendHeartRateCapabilitiesService4,
             awaitHeartRateService = { aacpManager.awaitHeartRateServiceResolution() },
+            isHostLibHidAdvertised = aacpManager::isHostLibHidAdvertised,
+            isHeartRateServiceMetadataResolved =
+                aacpManager::isHeartRateServiceMetadataResolved,
+            initializeHostLibHid = { aacpManager.initializeHostLibHid() },
             enableHeartRate = {
                 aacpManager.sendControlCommand(
                     AACPManager.Companion.ControlCommandIdentifiers.HRM_STATE.value,
@@ -496,6 +513,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             sendStart = aacpManager::sendHeartRateStartFrame,
             sendStop = { aacpManager.sendHeartRateStopFrame() },
             requestTransportRecovery = ::requestAutomaticAacpRecoveryForHeartRate,
+            beginDiagnosticAttempt = aacpManager::beginHeartRateDiagnosticAttempt,
+            logDiagnosticCheckpoint = aacpManager::logHeartRateDiagnosticCheckpoint,
             onPublishedSample = { sample ->
                 heartRateBlePeripheral.onValidatedSample(sample)
                 heartRateExporter.enqueue(
@@ -789,6 +808,28 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         connectionReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent?.action == AirPodsNotifications.AIRPODS_CONNECTION_DETECTED) {
+                    val detectedDevice = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        intent.getParcelableExtra("device", BluetoothDevice::class.java)!!
+                    } else {
+                        intent.getParcelableExtra("device") as BluetoothDevice?
+                    } ?: return
+                    val wasAlreadyCurrentDevice = device?.address == detectedDevice.address
+
+                    // OnePlus/Oplus can deliver a delayed UUID broadcast after the A2DP event
+                    // that already opened AACP. Treat that as a duplicate notification. Bumping
+                    // the connection generation here would make the active reader appear stale,
+                    // close the healthy socket, and destroy the HR service metadata it learned.
+                    val duplicateWithActiveAacp = wasAlreadyCurrentDevice &&
+                        BluetoothConnectionManager.aacpSocket?.isConnected == true
+                    if (duplicateWithActiveAacp) {
+                        currentAirPodsA2dpConnected = true
+                        Log.d(
+                            TAG,
+                            "Ignoring duplicate AirPods connection event while AACP is active"
+                        )
+                        return
+                    }
+
                     cancelAacpReconnect(
                         source = "connection-detected",
                         suppressFutureReconnects = false
@@ -797,11 +838,14 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         aacpReconnectSuppressed = false
                         aacpConnectionGeneration++
                     }
-                    device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        intent.getParcelableExtra("device", BluetoothDevice::class.java)!!
-                    } else {
-                        intent.getParcelableExtra("device") as BluetoothDevice?
+
+                    if (!wasAlreadyCurrentDevice) {
+                        // A new accessory must not inherit a service-role map cached for the
+                        // previous accessory during a transport-only reconnect.
+                        aacpManager.disconnected()
                     }
+                    device = detectedDevice
+                    currentAirPodsA2dpConnected = true
 
                     if (config.deviceName == "AirPods" && device?.name != null) {
                         config.deviceName = device?.name ?: "AirPods"
@@ -839,10 +883,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                             source = "physical-disconnect-broadcast",
                             expectedSocket = null
                         )
+                        currentAirPodsA2dpConnected = false
+                        device = null
+                        popupShown = false
                     }
-                    device = null
 //                    isConnectedLocally = false
-                    popupShown = false
                 }
             }
         }
@@ -1833,6 +1878,18 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         popupShown = true
     }
 
+    fun isCurrentAirPodsConnected(): Boolean {
+        val currentDevice = device ?: return false
+        val expectedAddress = macAddress.ifBlank {
+            sharedPreferences.getString("mac_address", "").orEmpty()
+        }
+        return expectedAddress.isNotBlank() &&
+            currentDevice.address == expectedAddress &&
+            currentAirPodsA2dpConnected &&
+            !otherDeviceTookOver &&
+            !disconnectedBecauseReversed
+    }
+
     var islandOpen = false
     var islandWindow: IslandWindow? = null
 
@@ -2582,18 +2639,21 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         BluetoothProfile.EXTRA_STATE,
                         BluetoothProfile.STATE_DISCONNECTED
                     )
+                    val savedMac = context?.getSharedPreferences("settings", MODE_PRIVATE)
+                        ?.getString("mac_address", "") ?: ""
+                    val matchedByMac = savedMac.isNotEmpty() && bluetoothDevice.address == savedMac
+                    val matchedByUuid = bluetoothDevice.uuids?.contains(uuid) == true
                     if (state == BluetoothProfile.STATE_CONNECTED) {
-                        val savedMac = context?.getSharedPreferences("settings", MODE_PRIVATE)
-                            ?.getString("mac_address", "") ?: ""
-                        val matchedByMac = savedMac.isNotEmpty() && bluetoothDevice.address == savedMac
-                        val matchedByUuid = bluetoothDevice.uuids?.contains(uuid) == true
                         if (matchedByUuid || matchedByMac) {
+                            ServiceManager.getService()?.currentAirPodsA2dpConnected = true
                             val connectionIntent =
                                 Intent(AirPodsNotifications.AIRPODS_CONNECTION_DETECTED)
                             connectionIntent.putExtra("name", name)
                             connectionIntent.putExtra("device", bluetoothDevice)
                             context?.sendBroadcast(connectionIntent)
                         }
+                    } else if (state == BluetoothProfile.STATE_DISCONNECTED && matchedByMac) {
+                        ServiceManager.getService()?.currentAirPodsA2dpConnected = false
                     }
                 } else if ("android.bluetooth.device.action.UUID" == action) {
                     val savedMac = context?.getSharedPreferences("settings", MODE_PRIVATE)
@@ -3224,7 +3284,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         closeSocketQuietly(attSocketToClose, "ATT socket")
         if (::attManager.isInitialized) attManager.disconnected()
         handleHeartRateDisconnected()
-        aacpManager.disconnected()
+        if (source == "physical-disconnect-broadcast") {
+            aacpManager.disconnected()
+        } else {
+            aacpManager.transportDisconnected()
+        }
         updateNotificationContent(false)
         Log.w(
             TAG,
@@ -3739,6 +3803,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         heartRateScope.cancel()
         suppressAacpReconnect("service-destroyed")
         transportRecoveryScope.cancel()
+        ServiceManager.setService(null)
 //        isConnectedLocally = false
 //        CrossDevice.isAvailable = true
         super.onDestroy()
@@ -3780,6 +3845,33 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             sharedPreferences.getBoolean(HEART_RATE_BLE_PERIPHERAL_PREFERENCE, false)
         ) {
             heartRateBlePeripheral.start()
+        }
+    }
+
+    fun playNearbySound(
+        allowUnverifiedTarget: Boolean = false,
+        expectedTargetGeneration: Long = -1L
+    ) {
+        if (!::nearbyFinder.isInitialized || !nearbyFinder.state.value.running) return
+        if (::bleManager.isInitialized) bleManager.stopScanning()
+        val started = nearbyFinder.playSound(
+            allowUnverifiedTarget = allowUnverifiedTarget,
+            expectedTargetGeneration = expectedTargetGeneration,
+            onSessionFinished = ::resumeNearbyFinderScanAfterSound
+        )
+        if (!started) resumeNearbyFinderScanAfterSound()
+    }
+
+    fun stopNearbySound() {
+        if (::nearbyFinder.isInitialized) nearbyFinder.stopSound()
+    }
+
+    private fun resumeNearbyFinderScanAfterSound() {
+        if (!::nearbyFinder.isInitialized || !nearbyFinder.state.value.running) return
+        if (!::bleManager.isInitialized ||
+            !bleManager.startScanning(scanAllAdvertisementsForFinder = true)
+        ) {
+            nearbyFinder.onScanError(-1)
         }
     }
 

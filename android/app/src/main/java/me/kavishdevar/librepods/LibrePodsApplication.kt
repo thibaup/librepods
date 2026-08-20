@@ -5,6 +5,8 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.room.Room
+import com.chaquo.python.Python
+import com.chaquo.python.android.AndroidPlatform
 import io.github.libxposed.service.XposedService
 import io.github.libxposed.service.XposedServiceHelper
 import kotlinx.coroutines.CoroutineScope
@@ -48,6 +50,9 @@ class LibrePodsApplication: Application(), XposedServiceHelper.OnServiceListener
         ProcessLifecycleOwner.get().lifecycle.addObserver(this)
 
         super<Application>.onCreate()
+        if (!Python.isStarted()) {
+            Python.start(AndroidPlatform(this))
+        }
         workoutRepository.retryPendingHealthConnectExports()
 
     }

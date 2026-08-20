@@ -47,6 +47,9 @@ sealed interface Screen: NavKey {
     data object NearbyFinder: Screen
 
     @Serializable
+    data object FindMy: Screen
+
+    @Serializable
     data object Accessibility: Screen
 
     @Serializable
