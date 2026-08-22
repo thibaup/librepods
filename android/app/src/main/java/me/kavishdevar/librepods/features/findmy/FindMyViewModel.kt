@@ -50,6 +50,20 @@ class FindMyViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 if (BuildConfig.DEBUG) Log.i(TAG, "Apple restore result: ${result.traceLabel()}")
                 applyAuthResult(result)
+            } catch (error: FindMyApiException) {
+                if (error.isSessionExpired()) {
+                    markSessionExpired()
+                } else {
+                    if (BuildConfig.DEBUG) {
+                        Log.w(TAG, "Apple account restore failed: ${error.message}")
+                    }
+                    phaseBeforeError = FindMyPhase.SESSION_ERROR
+                    _uiState.value = _uiState.value.copy(
+                        phase = FindMyPhase.SESSION_ERROR,
+                        appleId = client.appleId,
+                        errorMessage = error.message ?: "Could not restore the Find My session.",
+                    )
+                }
             } catch (error: Exception) {
                 if (BuildConfig.DEBUG) Log.w(TAG, "Apple account restore failed: ${error.message}")
                 phaseBeforeError = FindMyPhase.SESSION_ERROR
@@ -117,6 +131,15 @@ class FindMyViewModel(application: Application) : AndroidViewModel(application) 
                     }
                 }
                 setReady(devices)
+            } catch (error: FindMyApiException) {
+                if (error.isSessionExpired()) {
+                    markSessionExpired()
+                } else {
+                    _uiState.value = _uiState.value.copy(
+                        refreshingDeviceIds = emptySet(),
+                        errorMessage = error.message ?: "Could not refresh this Find My device.",
+                    )
+                }
             } catch (error: Exception) {
                 _uiState.value = _uiState.value.copy(
                     refreshingDeviceIds = emptySet(),
@@ -169,6 +192,15 @@ class FindMyViewModel(application: Application) : AndroidViewModel(application) 
                 withContext(Dispatchers.IO) {
                     operationMutex.withLock { operation() }
                 }
+            } catch (error: FindMyApiException) {
+                if (error.isSessionExpired()) {
+                    markSessionExpired()
+                } else {
+                    _uiState.value = _uiState.value.copy(
+                        phase = FindMyPhase.ERROR,
+                        errorMessage = error.message ?: "Find My failed.",
+                    )
+                }
             } catch (error: Exception) {
                 _uiState.value = _uiState.value.copy(
                     phase = FindMyPhase.ERROR,
@@ -192,6 +224,16 @@ class FindMyViewModel(application: Application) : AndroidViewModel(application) 
             }
             is FindMyAuthResult.Ready -> setReady(result.devices)
         }
+    }
+
+    private fun markSessionExpired() {
+        val appleId = _uiState.value.appleId.ifBlank { client.appleId }
+        client.signOut()
+        _uiState.value = FindMyUiState(
+            phase = FindMyPhase.SIGNED_OUT,
+            appleId = appleId,
+            errorMessage = "Apple's Find My session expired. Sign in again.",
+        )
     }
 
     private fun setReady(devices: List<FindMyDevice>) {

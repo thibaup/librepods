@@ -689,19 +689,6 @@ class AirPodsViewModel(
         service.stopNearbyFinder()
     }
 
-    fun playNearbySound(
-        allowUnverifiedTarget: Boolean = false,
-        expectedTargetGeneration: Long = uiState.value.nearbyFinder.soundTargetGeneration
-    ) {
-        if (!isReady || isDemoMode) return
-        service.playNearbySound(allowUnverifiedTarget, expectedTargetGeneration)
-    }
-
-    fun stopNearbySound() {
-        if (!isReady || isDemoMode) return
-        service.stopNearbySound()
-    }
-
     fun refreshNearbyFinderPrerequisites() {
         if (!isReady || isDemoMode) return
         service.refreshNearbyFinderPrerequisites()

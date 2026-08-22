@@ -27,6 +27,7 @@ internal data class FindMyDisplaySettings(
     val showCombineNotice: Boolean = true,
     val showHiddenDevices: Boolean = false,
     val sortByRecent: Boolean = true,
+    val darkMapEnabled: Boolean = false,
 )
 
 /**

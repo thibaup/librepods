@@ -29,7 +29,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -100,15 +100,17 @@ fun StyledButton(
             when (materialButtonStyle) {
                 MaterialButtonStyle.Filled -> {
                     Button(
-                        modifier = modifier.height(48.dp),
+                        modifier = modifier.heightIn(min = 48.dp),
                         onClick = onClick,
+                        enabled = enabled,
                         content = content
                     )
                 }
                 MaterialButtonStyle.Tonal -> {
                     FilledTonalButton(
-                        modifier = modifier.height(48.dp),
+                        modifier = modifier.heightIn(min = 48.dp),
                         onClick = onClick,
+                        enabled = enabled,
                         content = content,
                         colors = ButtonDefaults.filledTonalButtonColors(containerColor = surfaceColor)
                     )
@@ -116,16 +118,18 @@ fun StyledButton(
 
                 MaterialButtonStyle.Outlined -> {
                     OutlinedButton(
-                        modifier = modifier.height(48.dp),
+                        modifier = modifier.heightIn(min = 48.dp),
                         onClick = onClick,
+                        enabled = enabled,
                         content = content
                     )
                 }
 
                 MaterialButtonStyle.Normal -> {
                     TextButton(
-                        modifier = modifier.height(48.dp),
+                        modifier = modifier.heightIn(min = 48.dp),
                         onClick = onClick,
+                        enabled = enabled,
                         content = content
                     )
                 }
@@ -303,16 +307,17 @@ half4 main(float2 coord) {
                     .clickable(
                         interactionSource = null,
                         indication = null,
+                        enabled = enabled,
                         role = Role.Button,
                         onClick = {
-                            if (enabled) {
-                                haptics.performHapticFeedback(HapticFeedbackType.ContextClick)
-                                onClick()
-                            }
+                            haptics.performHapticFeedback(HapticFeedbackType.ContextClick)
+                            onClick()
                         }
                     )
                     .then(
-                        if (isInteractive) {
+                        if (!enabled) {
+                            Modifier
+                        } else if (isInteractive) {
                             Modifier.pointerInput(scope) {
                                 val progressAnimationSpec = spring(0.5f, 300f, 0.001f)
                                 val offsetAnimationSpec =
@@ -393,7 +398,7 @@ half4 main(float2 coord) {
                             }
                         }
                     )
-                    .height(48f.dp)
+                    .heightIn(min = 48f.dp)
                     .padding(horizontal = 16f.dp),
                 horizontalArrangement = Arrangement.spacedBy(8f.dp, Alignment.CenterHorizontally),
                 verticalAlignment = Alignment.CenterVertically,

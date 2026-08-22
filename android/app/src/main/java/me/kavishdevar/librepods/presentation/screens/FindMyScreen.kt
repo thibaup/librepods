@@ -1,10 +1,9 @@
 package me.kavishdevar.librepods.presentation.screens
 
 import android.text.format.DateUtils
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -15,21 +14,22 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -49,8 +49,10 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
+import com.kyant.backdrop.backdrops.LayerBackdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import me.kavishdevar.librepods.features.findmy.FindMyDisplayUiState
 import me.kavishdevar.librepods.features.findmy.FindMyDisplayViewModel
 import me.kavishdevar.librepods.features.findmy.FindMyNetworkAnisetteState
 import me.kavishdevar.librepods.features.findmy.FindMyNetworkPhase
@@ -59,6 +61,9 @@ import me.kavishdevar.librepods.features.findmy.FindMyNetworkViewModel
 import me.kavishdevar.librepods.features.findmy.FindMyPhase
 import me.kavishdevar.librepods.features.findmy.FindMyUiState
 import me.kavishdevar.librepods.features.findmy.FindMyViewModel
+import me.kavishdevar.librepods.presentation.components.MaterialButtonStyle
+import me.kavishdevar.librepods.presentation.components.StyledButton
+import me.kavishdevar.librepods.presentation.components.StyledFloatingSurface
 import me.kavishdevar.librepods.presentation.theme.DesignSystem
 import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
 
@@ -66,6 +71,16 @@ import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
 fun FindMyScreen(
     viewModel: FindMyViewModel = viewModel(),
     networkViewModel: FindMyNetworkViewModel = viewModel(),
+) {
+    FindMyCompactTheme {
+        FindMyScreenContent(viewModel, networkViewModel)
+    }
+}
+
+@Composable
+private fun FindMyScreenContent(
+    viewModel: FindMyViewModel,
+    networkViewModel: FindMyNetworkViewModel,
 ) {
     val displayViewModel: FindMyDisplayViewModel = viewModel()
     val state by viewModel.uiState.collectAsState()
@@ -167,6 +182,8 @@ fun FindMyScreen(
             appleViewModel = viewModel,
             networkState = networkState,
             networkViewModel = networkViewModel,
+            displayState = displayState,
+            displayViewModel = displayViewModel,
             onBack = { showSourcesSetup = false },
         )
         return
@@ -175,8 +192,14 @@ fun FindMyScreen(
     // The two Find My planes are independent. Either a restored Apple-account snapshot or a
     // signed-in network account is enough to enter the library; the setup screen remains
     // available from the library menu for the other source.
-    val appleSourceAvailable = state.phase == FindMyPhase.READY || state.devices.isNotEmpty()
-    val networkSourceAvailable = networkState.accessories.isNotEmpty() ||
+    val appleSourceAvailable = state.devices.isNotEmpty() &&
+        state.phase in setOf(FindMyPhase.READY, FindMyPhase.REFRESHING)
+    val networkSourceAvailable =
+        (networkState.accessories.isNotEmpty() &&
+            networkState.phase in setOf(
+                FindMyNetworkPhase.READY,
+                FindMyNetworkPhase.REFRESHING_REPORTS,
+            )) ||
         (networkState.appleId.isNotBlank() && networkState.phase in setOf(
             FindMyNetworkPhase.READY,
             FindMyNetworkPhase.READY_TO_RECOVER,
@@ -185,8 +208,6 @@ fun FindMyScreen(
             FindMyNetworkPhase.UNLOCKING_KEYCHAIN,
             FindMyNetworkPhase.CHOOSE_ACCESSORIES,
             FindMyNetworkPhase.IMPORTING_ACCESSORIES,
-            FindMyNetworkPhase.IMPORTING_EXPORT,
-            FindMyNetworkPhase.ENTER_EXPORT_PASSCODE,
             FindMyNetworkPhase.REFRESHING_REPORTS,
         ))
     val canShowLibrary = appleSourceAvailable || networkSourceAvailable
@@ -221,6 +242,8 @@ fun FindMyScreen(
                 appleViewModel = viewModel,
                 networkState = networkState,
                 networkViewModel = networkViewModel,
+                displayState = displayState,
+                displayViewModel = displayViewModel,
                 onBack = null,
             )
         state.phase == FindMyPhase.SIGNING_IN && state.devices.isEmpty() ->
@@ -233,6 +256,8 @@ fun FindMyScreen(
             appleViewModel = viewModel,
             networkState = networkState,
             networkViewModel = networkViewModel,
+            displayState = displayState,
+            displayViewModel = displayViewModel,
             onBack = null,
         )
     }
@@ -244,103 +269,103 @@ private fun FindMySourcesSetup(
     appleViewModel: FindMyViewModel,
     networkState: FindMyNetworkUiState,
     networkViewModel: FindMyNetworkViewModel,
+    displayState: FindMyDisplayUiState,
+    displayViewModel: FindMyDisplayViewModel,
     onBack: (() -> Unit)?,
 ) {
-    val bothSourcesConfigured = appleState.appleId.isNotBlank() &&
-        networkState.appleId.isNotBlank() &&
-        networkState.phase !in setOf(
-            FindMyNetworkPhase.SIGNED_OUT,
-            FindMyNetworkPhase.RESTORING,
-        )
-    var showCombineExplanation by rememberSaveable { mutableStateOf(true) }
-    FindMyFormContainer {
+    val bothSourcesConfigured = appleState.devices.isNotEmpty() &&
+        networkState.accessories.isNotEmpty()
+    FindMyFormContainer { backdrop ->
         onBack?.let { goBack ->
-            OutlinedButton(onClick = goBack, modifier = Modifier.align(Alignment.Start)) {
-                Text("Back to Find My")
-            }
+            StyledButton(
+                onClick = goBack,
+                backdrop = backdrop,
+                materialButtonStyle = MaterialButtonStyle.Outlined,
+                modifier = Modifier.align(Alignment.Start),
+            ) { Text("Back to Find My") }
             Spacer(Modifier.height(16.dp))
         }
         Text(
             "Find My sources",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.fillMaxWidth(),
         )
         Text(
-            "Choose which Apple data sources are connected. You can use either source or both " +
-                "together; their records use different IDs and are never merged silently.",
+            "Use either Apple data source or both. Their identifiers are separate, so records are never merged without your confirmation.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(top = 8.dp, bottom = 18.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 16.dp),
         )
-        if (bothSourcesConfigured && showCombineExplanation) {
-            Card(
+        if (bothSourcesConfigured && displayState.settings.showCombineNotice) {
+            StyledFloatingSurface(
+                backdrop = backdrop,
+                selected = true,
+                shape = RoundedCornerShape(20.dp),
                 modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                ),
             ) {
-                Row(
-                    modifier = Modifier.padding(start = 14.dp, top = 10.dp, bottom = 10.dp),
-                    verticalAlignment = Alignment.Top,
-                ) {
+                Row(verticalAlignment = Alignment.Top) {
                     Column(Modifier.weight(1f)) {
                         Text(
                             "Both sources are enabled",
-                            style = MaterialTheme.typography.titleMedium,
+                            style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
-                            "The same physical device can appear twice because Apple-account and " +
-                                "Find My-network records have different identifiers. Open a device " +
-                                "and use ‘Combine with another source’ only after you have confirmed " +
-                                "the two records are the same device.",
+                            "A physical device can appear twice. Use Combine only after confirming the two source records are the same device.",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer,
-                            modifier = Modifier.padding(top = 4.dp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 3.dp),
                         )
                     }
-                    IconButton(onClick = { showCombineExplanation = false }) {
+                    IconButton(
+                        onClick = {
+                            displayViewModel.updateLibraryPreferences(showCombineNotice = false)
+                        },
+                        modifier = Modifier.size(48.dp),
+                    ) {
                         Icon(Icons.Default.Close, contentDescription = "Dismiss combine explanation")
                     }
                 }
             }
         }
-        FindMyAppleAccountCard(state = appleState, viewModel = appleViewModel)
+        FindMyAppleAccountCard(
+            state = appleState,
+            viewModel = appleViewModel,
+            backdrop = backdrop,
+        )
         Spacer(Modifier.height(16.dp))
-        FindMyNetworkCard(state = networkState, viewModel = networkViewModel)
+        FindMyNetworkCardContent(
+            state = networkState,
+            viewModel = networkViewModel,
+            backdrop = backdrop,
+        )
     }
 }
 
-/** The iCloud/Apple-account login and session controls used by the combined source setup. */
 @Composable
 private fun FindMyAppleAccountCard(
     state: FindMyUiState,
     viewModel: FindMyViewModel,
+    backdrop: LayerBackdrop,
 ) {
     var appleId by rememberSaveable(state.appleId) { mutableStateOf(state.appleId) }
     var password by remember { mutableStateOf("") }
     var verificationCode by remember { mutableStateOf("") }
-    Card(
+
+    StyledFloatingSurface(
+        backdrop = backdrop,
+        shape = RoundedCornerShape(24.dp),
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-        ),
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                "iCloud / Apple account",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                "Apple's Find My account service for your devices and AirPods",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 2.dp),
+        Column(modifier = Modifier.fillMaxWidth().padding(4.dp)) {
+            FindMySourceStatusHeader(
+                title = "Apple account",
+                subtitle = "Device locations from Apple's account service",
+                status = appleSourceSetupStatus(state),
             )
             when (state.phase) {
-                FindMyPhase.RESTORING -> NetworkBusy("Restoring the encrypted Apple session…")
+                FindMyPhase.RESTORING -> NetworkBusy("Restoring encrypted Apple session…")
 
                 FindMyPhase.SIGNED_OUT, FindMyPhase.ERROR -> {
                     if (state.phase == FindMyPhase.ERROR && state.appleId.isNotBlank()) {
@@ -348,20 +373,18 @@ private fun FindMyAppleAccountCard(
                             state.errorMessage ?: "The Apple session needs attention.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.padding(top = 14.dp),
+                            modifier = Modifier.padding(top = 12.dp),
                         )
-                        Button(
+                        StyledButton(
                             onClick = viewModel::retrySavedSession,
+                            backdrop = backdrop,
                             modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
                         ) { Text("Retry Apple session") }
-                        TextButton(onClick = viewModel::signOut, modifier = Modifier.fillMaxWidth()) {
-                            Text("Sign out and use another account")
-                        }
                     } else {
                         Text(
                             "Sign in to load the locations Apple currently has for your devices.",
                             style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.padding(top = 16.dp),
+                            modifier = Modifier.padding(top = 12.dp),
                         )
                         OutlinedTextField(
                             value = appleId,
@@ -372,7 +395,7 @@ private fun FindMyAppleAccountCard(
                                 keyboardType = KeyboardType.Email,
                                 imeAction = ImeAction.Next,
                             ),
-                            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                            modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
                         )
                         OutlinedTextField(
                             value = password,
@@ -384,16 +407,17 @@ private fun FindMyAppleAccountCard(
                                 keyboardType = KeyboardType.Password,
                                 imeAction = ImeAction.Done,
                             ),
-                            modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                         )
-                        Button(
+                        StyledButton(
                             onClick = {
                                 val submitted = password
                                 password = ""
                                 viewModel.signIn(appleId, submitted)
                             },
+                            backdrop = backdrop,
                             enabled = appleId.isNotBlank() && password.isNotEmpty(),
-                            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                            modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
                         ) { Text("Sign in to iCloud Find My") }
                     }
                 }
@@ -411,7 +435,7 @@ private fun FindMyAppleAccountCard(
                     Text(
                         "Enter the six-digit code from a trusted Apple device for ${state.appleId}.",
                         style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(top = 16.dp),
+                        modifier = Modifier.padding(top = 12.dp),
                     )
                     OutlinedTextField(
                         value = verificationCode,
@@ -422,57 +446,49 @@ private fun FindMyAppleAccountCard(
                             keyboardType = KeyboardType.NumberPassword,
                             imeAction = ImeAction.Done,
                         ),
-                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     )
-                    Button(
+                    StyledButton(
                         onClick = {
                             val submitted = verificationCode
                             verificationCode = ""
                             viewModel.submitTwoFactor(submitted)
                         },
+                        backdrop = backdrop,
                         enabled = verificationCode.length == 6,
-                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                     ) { Text("Verify Apple account") }
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        TextButton(onClick = viewModel::requestNewTwoFactorCode) {
-                            Text("Send new code")
-                        }
-                        TextButton(onClick = viewModel::signOut) { Text("Use another account") }
-                    }
+                    StyledButton(
+                        onClick = viewModel::requestNewTwoFactorCode,
+                        backdrop = backdrop,
+                        materialButtonStyle = MaterialButtonStyle.Normal,
+                        modifier = Modifier.align(Alignment.Start),
+                    ) { Text("Send new code") }
                 }
 
                 FindMyPhase.READY -> {
                     Text(
                         "Signed in as ${state.appleId.ifBlank { "Apple account" }}",
                         style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(top = 14.dp),
+                        modifier = Modifier.padding(top = 12.dp),
                     )
                     Text(
                         "${state.devices.size} Apple device${if (state.devices.size == 1) "" else "s"} available",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 3.dp),
+                        modifier = Modifier.padding(top = 2.dp),
                     )
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        Button(onClick = viewModel::refresh, modifier = Modifier.weight(1f)) {
-                            Text("Refresh")
-                        }
-                        OutlinedButton(onClick = viewModel::signOut, modifier = Modifier.weight(1f)) {
-                            Text("Sign out")
-                        }
-                    }
+                    StyledButton(
+                        onClick = viewModel::refresh,
+                        backdrop = backdrop,
+                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                    ) { Text("Refresh Apple locations") }
                     state.lastUpdatedMillis?.let {
                         Text(
                             "Updated ${relativeTime(it)}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 8.dp),
+                            modifier = Modifier.padding(top = 6.dp),
                         )
                     }
                 }
@@ -482,23 +498,20 @@ private fun FindMyAppleAccountCard(
                         state.errorMessage ?: "The Apple session needs attention.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(top = 14.dp),
+                        modifier = Modifier.padding(top = 12.dp),
                     )
-                    Button(
+                    StyledButton(
                         onClick = viewModel::retrySavedSession,
-                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                        backdrop = backdrop,
+                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
                     ) { Text("Retry Apple session") }
-                    TextButton(onClick = viewModel::signOut, modifier = Modifier.fillMaxWidth()) {
-                        Text("Sign out and use another account")
-                    }
                 }
             }
             Text(
-                "Passwords and verification codes are used only for Apple's sign-in flow; " +
-                    "the encrypted session is kept in Android Keystore-backed storage.",
+                "Security: passwords and verification codes are used only during Apple sign-in. The reusable session is kept in Android Keystore-backed encrypted storage.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 12.dp),
+                modifier = Modifier.padding(top = 10.dp),
             )
         }
     }
@@ -509,69 +522,130 @@ internal fun FindMyNetworkCard(
     state: FindMyNetworkUiState,
     viewModel: FindMyNetworkViewModel,
 ) {
-    Card(
+    val backdrop = rememberLayerBackdrop()
+    Box(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-        ),
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = "Find My network",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.SemiBold,
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(MaterialTheme.colorScheme.surfaceContainer)
+                .layerBackdrop(backdrop),
+        )
+        FindMyNetworkCardContent(state = state, viewModel = viewModel, backdrop = backdrop)
+    }
+}
+
+@Composable
+private fun FindMyNetworkCardContent(
+    state: FindMyNetworkUiState,
+    viewModel: FindMyNetworkViewModel,
+    backdrop: LayerBackdrop,
+) {
+    StyledFloatingSurface(
+        backdrop = backdrop,
+        shape = RoundedCornerShape(24.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(4.dp)) {
+            FindMySourceStatusHeader(
+                title = "Find My network",
+                subtitle = "Crowd-sourced reports for AirPods, AirTags, and compatible tags",
+                status = networkSourceSetupStatus(state),
             )
             Text(
-                text = "Separate crowd-sourced network session for AirPods, AirTags, and compatible tags",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 2.dp),
-            )
-            Text(
-                "This login is separate from the iCloud card above. When both are ready, their " +
-                    "records are shown together and can be combined manually.",
+                "This account session is separate from the Apple-account source above. When both are ready, records remain distinct until you combine them manually.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 5.dp),
+                modifier = Modifier.padding(top = 6.dp),
             )
             Text(
                 text = when (state.anisetteState) {
-                    FindMyNetworkAnisetteState.NOT_CHECKED -> "On-device sign-in not checked"
-                    FindMyNetworkAnisetteState.CHECKING -> "Preparing private on-device sign-in…"
-                    FindMyNetworkAnisetteState.LOCAL_READY -> "On-device sign-in ready"
+                    FindMyNetworkAnisetteState.NOT_CHECKED -> "Sign-in bootstrap: not checked"
+                    FindMyNetworkAnisetteState.CHECKING -> "Sign-in bootstrap: preparing on-device flow…"
+                    FindMyNetworkAnisetteState.LOCAL_READY -> "Sign-in bootstrap: on-device ready"
                     FindMyNetworkAnisetteState.REMOTE_FALLBACK ->
-                        "On-device sign-in unavailable; secure network bootstrap will use the configured server"
+                        "Sign-in bootstrap: configured secure server fallback"
                 },
                 style = MaterialTheme.typography.bodySmall,
-                color = when (state.anisetteState) {
-                    FindMyNetworkAnisetteState.LOCAL_READY -> MaterialTheme.colorScheme.primary
-                    else -> MaterialTheme.colorScheme.onSurfaceVariant
-                },
-                modifier = Modifier.padding(top = 8.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
             )
-            FindMyNetworkContent(
-                state = state,
-                viewModel = viewModel,
+            FindMyNetworkContent(state = state, viewModel = viewModel, backdrop = backdrop)
+        }
+    }
+}
+
+@Composable
+private fun FindMySourceStatusHeader(
+    title: String,
+    subtitle: String,
+    status: String,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 1.dp),
+            )
+        }
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        ) {
+            Text(
+                status,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
             )
         }
     }
+}
+
+private fun appleSourceSetupStatus(state: FindMyUiState): String = when (state.phase) {
+    FindMyPhase.RESTORING -> "Restoring"
+    FindMyPhase.SIGNED_OUT -> "Not connected"
+    FindMyPhase.SIGNING_IN -> "Signing in"
+    FindMyPhase.NEEDS_TWO_FACTOR -> "Verify"
+    FindMyPhase.REFRESHING -> "Refreshing"
+    FindMyPhase.READY -> "Ready"
+    FindMyPhase.SESSION_ERROR, FindMyPhase.ERROR -> "Attention"
+}
+
+private fun networkSourceSetupStatus(state: FindMyNetworkUiState): String = when (state.phase) {
+    FindMyNetworkPhase.RESTORING -> "Restoring"
+    FindMyNetworkPhase.SIGNED_OUT -> "Not connected"
+    FindMyNetworkPhase.SIGNING_IN -> "Signing in"
+    FindMyNetworkPhase.CHOOSE_TWO_FACTOR_METHOD,
+    FindMyNetworkPhase.ENTER_TWO_FACTOR_CODE -> "Verify"
+    FindMyNetworkPhase.READY_TO_RECOVER,
+    FindMyNetworkPhase.OPENING_RECOVERY,
+    FindMyNetworkPhase.CHOOSE_RECOVERY_DEVICE,
+    FindMyNetworkPhase.UNLOCKING_KEYCHAIN,
+    FindMyNetworkPhase.CHOOSE_ACCESSORIES,
+    FindMyNetworkPhase.IMPORTING_ACCESSORIES -> "Recovery"
+    FindMyNetworkPhase.REFRESHING_REPORTS -> "Refreshing"
+    FindMyNetworkPhase.READY -> "Ready"
+    FindMyNetworkPhase.ERROR -> "Attention"
 }
 
 @Composable
 private fun FindMyNetworkContent(
     state: FindMyNetworkUiState,
     viewModel: FindMyNetworkViewModel,
+    backdrop: LayerBackdrop,
 ) {
     var appleId by rememberSaveable(state.appleId) { mutableStateOf(state.appleId) }
     var password by remember { mutableStateOf("") }
     var verificationCode by remember { mutableStateOf("") }
-    var exportPasscode by remember { mutableStateOf("") }
-    val exportPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let(viewModel::importOpenTagViewerExport)
-    }
-    val chooseExport = {
-        exportPicker.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
-    }
 
     LaunchedEffect(state.message) {
         if (state.message != null) {
@@ -581,13 +655,12 @@ private fun FindMyNetworkContent(
     }
 
     state.message?.let { message ->
-        Card(
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-            ),
-            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+        StyledFloatingSurface(
+            backdrop = backdrop,
+            selected = true,
+            modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
         ) {
-            Text(message, modifier = Modifier.padding(12.dp))
+            Text(message, style = MaterialTheme.typography.bodySmall)
         }
     }
 
@@ -596,10 +669,9 @@ private fun FindMyNetworkContent(
 
         FindMyNetworkPhase.SIGNED_OUT -> {
             Text(
-                text = "Sign in once to recover your accessory owner keys directly from " +
-                    "Apple, then decrypt their real Find My network reports on this phone.",
+                text = "Sign in once to recover accessory owner keys directly from Apple, then decrypt their Find My network reports on this phone.",
                 style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(top = 16.dp),
+                modifier = Modifier.padding(top = 12.dp),
             )
             OutlinedTextField(
                 value = appleId,
@@ -610,7 +682,7 @@ private fun FindMyNetworkContent(
                     keyboardType = KeyboardType.Email,
                     imeAction = ImeAction.Next,
                 ),
-                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
             )
             OutlinedTextField(
                 value = password,
@@ -622,25 +694,23 @@ private fun FindMyNetworkContent(
                     keyboardType = KeyboardType.Password,
                     imeAction = ImeAction.Done,
                 ),
-                modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             )
-            Button(
+            StyledButton(
                 onClick = {
                     val submitted = password
                     password = ""
                     viewModel.signIn(appleId, submitted)
                 },
+                backdrop = backdrop,
                 enabled = appleId.isNotBlank() && password.isNotEmpty(),
-                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
             ) { Text("Sign in to Find My network") }
             Text(
-                text = "FindMy.py account state can include reusable credentials and tokens. " +
-                    "LibrePods encrypts that state and all recovered private keys with a " +
-                    "non-exportable Android Keystore key. Passwords, verification codes, and " +
-                    "device passcodes are never logged or stored separately.",
+                text = "Security: reusable account state and recovered private keys are encrypted with a non-exportable Android Keystore key. Passwords, verification codes, and device passcodes are not stored separately.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 12.dp),
+                modifier = Modifier.padding(top = 10.dp),
             )
         }
 
@@ -649,11 +719,13 @@ private fun FindMyNetworkContent(
         FindMyNetworkPhase.CHOOSE_TWO_FACTOR_METHOD -> {
             Text(
                 "Choose where Apple should send the verification code.",
-                modifier = Modifier.padding(top = 16.dp),
+                modifier = Modifier.padding(top = 12.dp),
             )
             state.twoFactorMethods.forEach { method ->
-                OutlinedButton(
+                StyledButton(
                     onClick = { viewModel.chooseTwoFactorMethod(method.index) },
+                    backdrop = backdrop,
+                    materialButtonStyle = MaterialButtonStyle.Outlined,
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 ) { Text(method.label) }
             }
@@ -662,7 +734,7 @@ private fun FindMyNetworkContent(
         FindMyNetworkPhase.ENTER_TWO_FACTOR_CODE -> {
             Text(
                 "Enter the six-digit Apple verification code.",
-                modifier = Modifier.padding(top = 16.dp),
+                modifier = Modifier.padding(top = 12.dp),
             )
             OutlinedTextField(
                 value = verificationCode,
@@ -673,45 +745,31 @@ private fun FindMyNetworkContent(
                     keyboardType = KeyboardType.NumberPassword,
                     imeAction = ImeAction.Done,
                 ),
-                modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             )
-            Button(
+            StyledButton(
                 onClick = {
                     val submitted = verificationCode
                     verificationCode = ""
                     viewModel.submitTwoFactorCode(submitted)
                 },
+                backdrop = backdrop,
                 enabled = verificationCode.length == 6,
-                modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
             ) { Text("Verify") }
         }
 
         FindMyNetworkPhase.READY_TO_RECOVER -> {
             Text(
-                text = "Signed in as ${state.appleId}. Recover the owner keys Apple keeps in " +
-                    "your encrypted iCloud keychain. You will choose a trusted device and enter " +
-                    "that device's screen-lock passcode.",
+                text = "Signed in as ${state.appleId}. Recover owner keys from your encrypted iCloud keychain using a trusted device and that device's screen-lock passcode.",
                 style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(top = 16.dp),
+                modifier = Modifier.padding(top = 12.dp),
             )
-            Button(
+            StyledButton(
                 onClick = viewModel::openRecovery,
-                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                backdrop = backdrop,
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
             ) { Text("Recover accessory keys") }
-            OutlinedButton(
-                onClick = chooseExport,
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-            ) { Text("Import OpenTagViewer export") }
-            Text(
-                text = "Use an OpenTagViewer ZIP if Apple's recovery record has no usable " +
-                    "owner keys. Plain and locked AES exports are supported.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 8.dp),
-            )
-            TextButton(onClick = viewModel::signOut, modifier = Modifier.fillMaxWidth()) {
-                Text("Sign out and erase network keys")
-            }
         }
 
         FindMyNetworkPhase.OPENING_RECOVERY -> NetworkBusy("Opening Apple's keychain recovery…")
@@ -719,11 +777,13 @@ private fun FindMyNetworkContent(
         FindMyNetworkPhase.CHOOSE_RECOVERY_DEVICE -> {
             Text(
                 "Choose a trusted Apple device whose screen-lock passcode you know.",
-                modifier = Modifier.padding(top = 16.dp),
+                modifier = Modifier.padding(top = 12.dp),
             )
             state.recoveryDevices.forEach { device ->
-                OutlinedButton(
+                StyledButton(
                     onClick = { viewModel.selectRecoveryDevice(device.serial) },
+                    backdrop = backdrop,
+                    materialButtonStyle = MaterialButtonStyle.Outlined,
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -736,13 +796,12 @@ private fun FindMyNetworkContent(
                     }
                 }
             }
-            OutlinedButton(
-                onClick = chooseExport,
-                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-            ) { Text("Import OpenTagViewer export instead") }
-            TextButton(onClick = viewModel::cancelRecovery, modifier = Modifier.fillMaxWidth()) {
-                Text("Cancel recovery")
-            }
+            StyledButton(
+                onClick = viewModel::cancelRecovery,
+                backdrop = backdrop,
+                materialButtonStyle = MaterialButtonStyle.Normal,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Cancel recovery") }
         }
 
         FindMyNetworkPhase.UNLOCKING_KEYCHAIN -> NetworkBusy("Unlocking the encrypted keychain…")
@@ -750,7 +809,7 @@ private fun FindMyNetworkContent(
         FindMyNetworkPhase.CHOOSE_ACCESSORIES -> {
             Text(
                 "Choose which recovered accessories to keep on this phone.",
-                modifier = Modifier.padding(top = 16.dp),
+                modifier = Modifier.padding(top = 12.dp),
             )
             state.candidates.forEach { candidate ->
                 Row(
@@ -773,113 +832,64 @@ private fun FindMyNetworkContent(
                     }
                 }
             }
-            Button(
+            StyledButton(
                 onClick = viewModel::importSelectedAccessories,
+                backdrop = backdrop,
                 enabled = state.selectedBeaconIds.isNotEmpty(),
-                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
             ) { Text("Import ${state.selectedBeaconIds.size} selected") }
-            TextButton(onClick = viewModel::cancelRecovery, modifier = Modifier.fillMaxWidth()) {
-                Text("Cancel")
-            }
+            StyledButton(
+                onClick = viewModel::cancelRecovery,
+                backdrop = backdrop,
+                materialButtonStyle = MaterialButtonStyle.Normal,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Cancel") }
         }
 
         FindMyNetworkPhase.IMPORTING_ACCESSORIES ->
             NetworkBusy("Encrypting recovered accessory keys…")
 
-        FindMyNetworkPhase.IMPORTING_EXPORT ->
-            NetworkBusy("Checking and encrypting the OpenTagViewer export…")
-
-        FindMyNetworkPhase.ENTER_EXPORT_PASSCODE -> {
-            Text(
-                text = "This export is locked. Enter the separate 12-character code created " +
-                    "with the export—not your Apple password or phone passcode.",
-                modifier = Modifier.padding(top = 16.dp),
-            )
-            Text(
-                text = "Keep that code separate from the ZIP when sharing or backing it up.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 6.dp),
-            )
-            OutlinedTextField(
-                value = exportPasscode,
-                onValueChange = { exportPasscode = it.take(32) },
-                label = { Text("Export code") },
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Password,
-                    imeAction = ImeAction.Done,
-                ),
-                modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
-            )
-            Button(
-                onClick = {
-                    val submitted = exportPasscode
-                    exportPasscode = ""
-                    viewModel.submitExportPasscode(submitted)
-                },
-                enabled = exportPasscode.isNotBlank(),
-                modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
-            ) { Text("Unlock and import") }
-            TextButton(
-                onClick = {
-                    exportPasscode = ""
-                    viewModel.cancelExportPasscode()
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) { Text("Choose another file") }
-        }
-
-        FindMyNetworkPhase.REFRESHING_REPORTS -> {
+        FindMyNetworkPhase.REFRESHING_REPORTS ->
             NetworkBusy("Downloading and decrypting Find My network reports…")
-        }
 
         FindMyNetworkPhase.READY -> {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Button(
+                StyledButton(
                     onClick = viewModel::refreshReports,
+                    backdrop = backdrop,
                     modifier = Modifier.weight(1f),
                 ) { Text("Refresh") }
-                OutlinedButton(
+                StyledButton(
                     onClick = viewModel::openRecovery,
+                    backdrop = backdrop,
+                    materialButtonStyle = MaterialButtonStyle.Outlined,
                     modifier = Modifier.weight(1f),
                 ) { Text("Recover more") }
             }
-            OutlinedButton(
-                onClick = chooseExport,
-                modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
-            ) { Text("Import OpenTagViewer export") }
             state.lastUpdatedMillis?.let {
                 Text(
                     "Network reports updated ${relativeTime(it)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 10.dp),
+                    modifier = Modifier.padding(top = 8.dp),
                 )
-            }
-            TextButton(onClick = viewModel::signOut, modifier = Modifier.fillMaxWidth()) {
-                Text("Sign out and erase recovered keys")
             }
         }
 
         FindMyNetworkPhase.ERROR -> {
             Text(
-                "The encrypted network session could not be restored. Retry first; reset only " +
-                    "if you want to erase its account state and recovered keys.",
+                "The encrypted network session could not be restored. Retry the saved session before continuing with another Find My source.",
                 style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(top = 16.dp),
+                modifier = Modifier.padding(top = 12.dp),
             )
-            Button(
+            StyledButton(
                 onClick = viewModel::retryRestore,
-                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                backdrop = backdrop,
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
             ) { Text("Retry encrypted session") }
-            TextButton(onClick = viewModel::signOut, modifier = Modifier.fillMaxWidth()) {
-                Text("Reset network setup")
-            }
         }
     }
 }
@@ -887,46 +897,81 @@ private fun FindMyNetworkContent(
 @Composable
 private fun NetworkBusy(label: String) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(top = 18.dp),
+        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        CircularProgressIndicator()
+        CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
         Text(label, style = MaterialTheme.typography.bodyMedium)
     }
 }
 
 @Composable
 private fun LoadingFindMy(label: String, onOpenSourcesSetup: (() -> Unit)? = null) {
-    Column(
-        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainer),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
+    val backdrop = rememberLayerBackdrop()
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surfaceContainer),
+        contentAlignment = Alignment.Center,
     ) {
-        CircularProgressIndicator()
-        Text(label, modifier = Modifier.padding(top = 16.dp))
-        onOpenSourcesSetup?.let { openSetup ->
-            OutlinedButton(onClick = openSetup, modifier = Modifier.padding(top = 16.dp)) {
-                Text("Open Find My sources setup")
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(MaterialTheme.colorScheme.surfaceContainer)
+                .layerBackdrop(backdrop),
+        )
+        StyledFloatingSurface(
+            backdrop = backdrop,
+            shape = RoundedCornerShape(24.dp),
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator()
+                Text(label, modifier = Modifier.padding(top = 12.dp), textAlign = TextAlign.Center)
+                onOpenSourcesSetup?.let { openSetup ->
+                    StyledButton(
+                        onClick = openSetup,
+                        backdrop = backdrop,
+                        materialButtonStyle = MaterialButtonStyle.Outlined,
+                        modifier = Modifier.padding(top = 12.dp),
+                    ) { Text("Open Find My sources setup") }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun FindMyFormContainer(content: @Composable ColumnScope.() -> Unit) {
-    val materialDesign = LocalDesignSystem.current == DesignSystem.Material
-    val topPadding = if (materialDesign) 40.dp else
-        WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 100.dp
-    Column(
+private fun FindMyFormContainer(
+    content: @Composable ColumnScope.(backdrop: LayerBackdrop) -> Unit,
+) {
+    val backdrop = rememberLayerBackdrop()
+    val topPadding = if (LocalDesignSystem.current == DesignSystem.Apple) {
+        WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 80.dp
+    } else {
+        16.dp
+    }
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.surfaceContainer)
-            .verticalScroll(rememberScrollState())
-            .padding(start = 24.dp, end = 24.dp, top = topPadding, bottom = 32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        content = content,
-    )
+    ) {
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(MaterialTheme.colorScheme.surfaceContainer)
+                .layerBackdrop(backdrop),
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 16.dp, end = 16.dp, top = topPadding, bottom = 32.dp),
+            horizontalAlignment = Alignment.Start,
+        ) {
+            content(this, backdrop)
+        }
+    }
 }
 
 private fun relativeTime(timestampMillis: Long): String = DateUtils.getRelativeTimeSpanString(

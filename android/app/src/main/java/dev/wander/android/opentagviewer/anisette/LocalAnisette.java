@@ -114,10 +114,11 @@ public final class LocalAnisette implements AnisetteSource {
 
             this.unavailableReason = null;
             return true;
-        } catch (final Exception e) {
-            // Deliberately broad. Anything at all going wrong here has exactly one correct
-            // response - use the remote server - and a login is not the place to discover a
-            // new exception type.
+        } catch (final Exception | LinkageError e) {
+            // Ordinary failures and JVM linkage failures have the same safe outcome here:
+            // local Anisette is unavailable, so use the remote server. LinkageError matters for
+            // System.loadLibrary and failed native class initialisation, which are not Exceptions.
+            // A native SIGSEGV/SIGABRT is not catchable here and must be avoided at the caller.
             this.unavailableReason = e.getMessage() == null ? e.toString() : e.getMessage();
             Log.w(TAG, "local Anisette unavailable, falling back to a remote server: "
                     + this.unavailableReason, e);
@@ -372,7 +373,7 @@ public final class LocalAnisette implements AnisetteSource {
                 this.cached = new AnisetteHeaders(this.adi, this.identity)
                         .generate(AdiProvisioning.ANONYMOUS_DS_ID);
                 this.cachedAt = now;
-            } catch (final Exception e) {
+            } catch (final Exception | LinkageError e) {
                 Log.w(TAG, "could not produce Anisette data", e);
                 this.unavailableReason = String.valueOf(e.getMessage());
                 return "";

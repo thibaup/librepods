@@ -12,8 +12,6 @@ enum class FindMyNetworkPhase {
     UNLOCKING_KEYCHAIN,
     CHOOSE_ACCESSORIES,
     IMPORTING_ACCESSORIES,
-    IMPORTING_EXPORT,
-    ENTER_EXPORT_PASSCODE,
     REFRESHING_REPORTS,
     READY,
     ERROR,
@@ -78,7 +76,7 @@ internal object FindMyNetworkReasons {
     const val PASSCODE_REJECTED = "passcode_rejected"
     const val NO_KEYCHAIN_KEYS = "no_keychain_keys"
     const val NO_SUCH_RECORD = "no_such_record"
-    const val EXPORT_WRONG_PASSCODE = "export_wrong_passcode"
+    const val SESSION_EXPIRED = "session_expired"
 }
 
 internal const val FIND_MY_MAX_PASSCODE_ATTEMPTS = 3

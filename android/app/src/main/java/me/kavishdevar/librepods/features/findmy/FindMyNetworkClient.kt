@@ -1,7 +1,6 @@
 package me.kavishdevar.librepods.features.findmy
 
 import android.content.Context
-import android.net.Uri
 import com.chaquo.python.Kwarg
 import com.chaquo.python.PyObject
 import com.chaquo.python.Python
@@ -30,14 +29,6 @@ internal data class FindMyAnisetteResult(
     val local: Boolean,
     val detail: String?,
 )
-
-internal sealed interface FindMyNetworkExportImportResult {
-    data object NeedsPasscode : FindMyNetworkExportImportResult
-    data class Imported(
-        val count: Int,
-        val accessories: List<FindMyNetworkAccessory>,
-    ) : FindMyNetworkExportImportResult
-}
 
 /** Public JVM getters are consumed reflectively by the Chaquopy Python bridge. */
 internal data class FindMyNetworkAccessoryRequest(
@@ -98,7 +89,6 @@ internal class FindMyNetworkClient(context: Context) {
     private val appContext = context.applicationContext
     private val store = SecureFindMyNetworkStore(appContext)
     private val localAnisette = LocalAnisette(appContext)
-    private val zipImporter = OpenTagViewerZipImporter(appContext)
     private val mutex = Mutex()
 
     private var account: PyObject? = null
@@ -318,109 +308,6 @@ internal class FindMyNetworkClient(context: Context) {
             closeRecoveryLocked()
         }
     }
-
-    suspend fun importOpenTagViewerExport(
-        uri: Uri,
-        passcode: String? = null,
-    ): FindMyNetworkExportImportResult = onIo {
-        requireAccount()
-        closeRecoveryLocked()
-
-        val archive = try {
-            zipImporter.import(uri, passcode)
-        } catch (error: OpenTagViewerImportException) {
-            if (error.reason == OpenTagViewerImportReason.LOCKED && passcode == null) {
-                return@onIo FindMyNetworkExportImportResult.NeedsPasscode
-            }
-            throw FindMyNetworkException(
-                error.message ?: "The OpenTagViewer export could not be imported.",
-                reason = when (error.reason) {
-                    OpenTagViewerImportReason.WRONG_PASSCODE ->
-                        FindMyNetworkReasons.EXPORT_WRONG_PASSCODE
-                    else -> "export_${error.reason.name.lowercase()}"
-                },
-                cause = error,
-            )
-        }
-
-        requireBridgeOk(
-            mainModule().callAttr(
-                "validateOpenTagViewerManifest",
-                archive.manifestYaml,
-                archive.customAccessories.isNotEmpty(),
-            ),
-            "The OpenTagViewer manifest could not be validated.",
-        )
-
-        val imported = ArrayList<StoredFindMyNetworkAccessory>(
-            archive.pairedAccessories.size + archive.customAccessories.size,
-        )
-        for (record in archive.pairedAccessories) {
-            val prepared = requireBridgeOk(
-                mainModule().callAttr(
-                    "prepareImportedPairedAccessory",
-                    record.ownedBeaconPlist,
-                    record.beaconId,
-                    plistRecordsJson(record.namingRecords),
-                    plistRecordsJson(record.keyAlignmentRecords),
-                ),
-                "One imported accessory record could not be converted.",
-            )
-            val accessoryJson = prepared.getString("accessoryJson")
-            imported += StoredFindMyNetworkAccessory(
-                beaconId = record.beaconId,
-                label = prepared.optString("label").ifBlank { "Imported accessory" },
-                accessoryJson = accessoryJson,
-                serialNumber = extractAccessorySerialNumber(accessoryJson),
-            )
-        }
-
-        for (record in archive.customAccessories) {
-            val validated = requireBridgeOk(
-                mainModule().callAttr(
-                    "validateCustomAccessoryJson",
-                    record.accessoryJson,
-                    record.identifier,
-                ),
-                "One custom accessory in the export is invalid.",
-            )
-            val accessoryJson = validated.getString("accessoryJson")
-            imported += StoredFindMyNetworkAccessory(
-                beaconId = record.identifier,
-                label = validated.optString("label").ifBlank { "Imported custom tag" },
-                accessoryJson = accessoryJson,
-                serialNumber = extractAccessorySerialNumber(accessoryJson),
-            )
-        }
-
-        val byId = accessories.associateBy(StoredFindMyNetworkAccessory::beaconId).toMutableMap()
-        imported.forEach { byId[it.beaconId] = it }
-        accessories = byId.values.sortedBy { it.label.lowercase() }
-        persistAccountLocked()
-        FindMyNetworkExportImportResult.Imported(
-            count = imported.size,
-            accessories = accessories.map {
-                FindMyNetworkAccessory(
-                    beaconId = it.beaconId,
-                    label = it.label,
-                    location = null,
-                    reportCount = 0,
-                    serialNumber = it.serialNumber ?: extractAccessorySerialNumber(it.accessoryJson),
-                )
-            },
-        )
-    }
-
-    private fun plistRecordsJson(records: List<OpenTagViewerPlistRecord>): String =
-        JSONArray().apply {
-            records.forEach { record ->
-                put(
-                    JSONObject()
-                        .put("recordId", record.recordId)
-                        .put("plist", record.plist),
-                )
-            }
-        }.toString()
 
     suspend fun fetchReports(
         hoursBack: Int = 168,

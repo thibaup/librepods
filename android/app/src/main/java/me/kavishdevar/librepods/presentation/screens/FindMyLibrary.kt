@@ -22,9 +22,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -35,8 +37,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -50,25 +53,24 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -77,21 +79,31 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.zIndex
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.kyant.backdrop.backdrops.LayerBackdrop
+import com.kyant.backdrop.backdrops.layerBackdrop
+import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.features.findmy.FindMyDisplayEntry
@@ -106,6 +118,10 @@ import me.kavishdevar.librepods.features.findmy.FindMyNetworkUiState
 import me.kavishdevar.librepods.features.findmy.FindMyPhase
 import me.kavishdevar.librepods.features.findmy.FindMyUiState
 import me.kavishdevar.librepods.features.findmy.buildFindMyDisplayItems
+import me.kavishdevar.librepods.presentation.components.MaterialButtonStyle
+import me.kavishdevar.librepods.presentation.components.StyledBottomSheet
+import me.kavishdevar.librepods.presentation.components.StyledButton
+import me.kavishdevar.librepods.presentation.components.StyledFloatingSurface
 import me.kavishdevar.librepods.presentation.components.StyledToggle
 import me.kavishdevar.librepods.presentation.theme.DesignSystem
 import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
@@ -117,12 +133,16 @@ import org.osmdroid.views.CustomZoomButtonsController
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.CopyrightOverlay
 import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.TilesOverlay
 import java.util.Locale
 import kotlin.math.roundToInt
 
+private enum class FindMyViewMode { Devices, Map }
+private enum class FindMyManagementTab { Sources, Settings }
+
 /**
- * Device-first Find My UI adapted from OpenTagViewer's MIT-licensed map/card/list hierarchy.
- * LibrePods keeps its own Compose/data implementation because its two backends differ.
+ * Device-first Find My library. Behavior and data contracts stay shared; the supplied adaptive
+ * floating components own Apple-vs-Material visual treatment.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -140,41 +160,50 @@ internal fun FindMyLibraryList(
     onMessageShown: () -> Unit,
 ) {
     val context = LocalContext.current
-    val parentHeaderPadding = if (LocalDesignSystem.current == DesignSystem.Apple) {
+    val chromeTopPadding = if (LocalDesignSystem.current == DesignSystem.Apple) {
         WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 64.dp
     } else {
         0.dp
     }
+    val backdrop = rememberLayerBackdrop()
     val settings = displayState.settings
     val allItems = buildFindMyDisplayItems(
         webDevices = state.devices,
         networkAccessories = networkState.accessories,
         links = settings.links,
     )
-    val bothSourcesAvailable = allItems.any {
-        FindMyDisplaySource.APPLE_ACCOUNT in it.sources
-    } && allItems.any {
-        FindMyDisplaySource.FIND_MY_NETWORK in it.sources
+    val showHidden = settings.showHiddenDevices
+    val sortByRecent = settings.sortByRecent
+    val showCombineNotice = settings.showCombineNotice
+
+    val visibleLibraryItems = allItems
+        .filter { showHidden || entryFor(it, settings).visible }
+        .let { rows ->
+            if (sortByRecent) {
+                rows.sortedWith(
+                    compareByDescending<FindMyDisplayItem> {
+                        it.location?.timestampMillis ?: Long.MIN_VALUE
+                    }.thenBy { displayName(it, entryFor(it, settings)).lowercase() },
+                )
+            } else {
+                rows.sortedBy { displayName(it, entryFor(it, settings)).lowercase() }
+            }
+        }
+    val hasLocatedVisibleDevice = visibleLibraryItems.any { it.location != null }
+    var viewMode by rememberSaveable {
+        mutableStateOf(if (hasLocatedVisibleDevice) FindMyViewMode.Map else FindMyViewMode.Devices)
     }
-    var showHidden by rememberSaveable(displayState.accountId) {
-        mutableStateOf(settings.showHiddenDevices)
-    }
-    var showList by rememberSaveable { mutableStateOf(allItems.none { it.location != null }) }
     var viewChosenByUser by rememberSaveable { mutableStateOf(false) }
-    var viewMenuOpen by rememberSaveable { mutableStateOf(false) }
-    var showCombineNotice by rememberSaveable(displayState.accountId) {
-        mutableStateOf(settings.showCombineNotice)
-    }
     var searchVisible by rememberSaveable { mutableStateOf(false) }
     var search by rememberSaveable { mutableStateOf("") }
-    var sortByRecent by rememberSaveable(displayState.accountId) {
-        mutableStateOf(settings.sortByRecent)
-    }
-    var sortMenuOpen by rememberSaveable { mutableStateOf(false) }
-    var overflowOpen by rememberSaveable { mutableStateOf(false) }
-    var showSettings by rememberSaveable { mutableStateOf(false) }
+    var managementVisible by rememberSaveable { mutableStateOf(false) }
+    var managementTab by rememberSaveable { mutableStateOf(FindMyManagementTab.Sources) }
     var showSignOutWarning by rememberSaveable { mutableStateOf(false) }
     var selectedItemKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var viewportLatitude by rememberSaveable { mutableStateOf<Double?>(null) }
+    var viewportLongitude by rememberSaveable { mutableStateOf<Double?>(null) }
+    var viewportZoom by rememberSaveable { mutableStateOf<Double?>(null) }
+
     var editItemKey by rememberSaveable { mutableStateOf<String?>(null) }
     var renameItemKey by rememberSaveable { mutableStateOf<String?>(null) }
     var renameText by rememberSaveable { mutableStateOf("") }
@@ -196,40 +225,39 @@ internal fun FindMyLibraryList(
             onMessageShown()
         }
     }
-    LaunchedEffect(displayState.accountId) {
-        showHidden = settings.showHiddenDevices
-        showCombineNotice = settings.showCombineNotice
-        sortByRecent = settings.sortByRecent
-    }
-    LaunchedEffect(allItems.map { it.key to it.location?.timestampMillis }) {
-        if (!viewChosenByUser && allItems.isNotEmpty()) {
-            showList = allItems.none { it.location != null }
+    LaunchedEffect(hasLocatedVisibleDevice) {
+        if (!viewChosenByUser) {
+            viewMode = if (hasLocatedVisibleDevice) FindMyViewMode.Map else FindMyViewMode.Devices
         }
     }
-    val visibleItems = allItems
-        .filter { showHidden || entryFor(it, settings).visible }
-        .filter {
-            val query = search.trim().lowercase()
-            query.isBlank() || listOf(
-                displayName(it, entryFor(it, settings)),
-                it.defaultName,
-                it.modelLabel.orEmpty(),
-                it.sourceLabel,
-                it.serialNumbers.joinToString(" "),
-                it.stableIdentifier.orEmpty(),
-            ).joinToString(" ").lowercase().contains(query)
-        }
-        .let { rows ->
-            if (sortByRecent) {
-                rows.sortedWith(
-                    compareByDescending<FindMyDisplayItem> {
-                        it.location?.timestampMillis ?: Long.MIN_VALUE
-                    }.thenBy { displayName(it, entryFor(it, settings)).lowercase() },
-                )
-            } else {
-                rows.sortedBy { displayName(it, entryFor(it, settings)).lowercase() }
-            }
-        }
+
+    val query = search.trim().lowercase(Locale.ROOT)
+    val listItems = visibleLibraryItems.filter { item ->
+        query.isBlank() || listOf(
+            displayName(item, entryFor(item, settings)),
+            item.defaultName,
+            item.modelLabel.orEmpty(),
+            item.sourceLabel,
+            item.serialNumbers.joinToString(" "),
+            item.stableIdentifier.orEmpty(),
+        ).joinToString(" ").lowercase(Locale.ROOT).contains(query)
+    }
+    val locatedItems = visibleLibraryItems.filter { it.location != null }
+    val locatedKeys = locatedItems.map(FindMyDisplayItem::key)
+    LaunchedEffect(locatedKeys, selectedItemKey) {
+        val normalized = FindMyMapUiPolicy.normalizeSelectedKey(selectedItemKey, locatedKeys)
+        if (normalized != selectedItemKey) selectedItemKey = normalized
+    }
+
+    val restoredViewport = if (
+        viewportLatitude != null && viewportLongitude != null && viewportZoom != null
+    ) {
+        FindMyMapUiPolicy.restoreViewport(
+            listOf(viewportLatitude!!, viewportLongitude!!, viewportZoom!!),
+        )
+    } else {
+        null
+    }
 
     fun isRefreshing(item: FindMyDisplayItem): Boolean =
         state.phase == FindMyPhase.REFRESHING ||
@@ -251,7 +279,6 @@ internal fun FindMyLibraryList(
     val renameGroup = renameGroupId?.let { groupId -> settings.groups.firstOrNull { it.id == groupId } }
     val droppedSource = droppedSourceKey?.let(itemByKey::get)
     val droppedTarget = droppedTargetKey?.let(itemByKey::get)
-
     renameItem?.let { item ->
         AlertDialog(
             onDismissRequest = { renameItemKey = null },
@@ -564,6 +591,7 @@ internal fun FindMyLibraryList(
         DeviceDetailsDialog(
             item = item,
             entry = entry,
+            backdrop = backdrop,
             groupName = settings.groups.firstOrNull { it.id == entry.groupId }?.name,
             refreshing = isRefreshing(item),
             onDismiss = { editItemKey = null },
@@ -588,143 +616,6 @@ internal fun FindMyLibraryList(
                 if (item.isLinked) displayViewModel.unlink(item.memberKeys)
                 else linkItemKey = item.key
                 editItemKey = null
-            },
-        )
-    }
-
-    if (overflowOpen) {
-        AlertDialog(
-            onDismissRequest = { overflowOpen = false },
-            title = { Text("Find My options") },
-            text = {
-                Column {
-                    TextButton(
-                        onClick = {
-                            overflowOpen = false
-                            onOpenSourcesSetup()
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Find My sources setup", Modifier.fillMaxWidth()) }
-                    TextButton(
-                        onClick = {
-                            overflowOpen = false
-                            showSettings = true
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Find My settings", Modifier.fillMaxWidth()) }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { overflowOpen = false }) { Text("Cancel") }
-            },
-        )
-    }
-
-    if (showSettings) {
-        AlertDialog(
-            onDismissRequest = { showSettings = false },
-            title = { Text("Find My settings") },
-            text = {
-                Column(
-                    modifier = Modifier.verticalScroll(rememberScrollState()),
-                ) {
-                    StyledToggle(
-                        label = "Show duplicate notice",
-                        description = "Show the reminder when Apple-account and network records may be duplicated.",
-                        checked = showCombineNotice,
-                        onCheckedChange = {
-                            showCombineNotice = it
-                            displayViewModel.updateLibraryPreferences(showCombineNotice = it)
-                        },
-                    )
-                    StyledToggle(
-                        label = "Show removed devices",
-                        description = "Include devices you removed from the library.",
-                        checked = showHidden,
-                        onCheckedChange = {
-                            showHidden = it
-                            displayViewModel.updateLibraryPreferences(showHiddenDevices = it)
-                        },
-                    )
-                    Text(
-                        "Sort by",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Box {
-                        TextButton(
-                            onClick = { sortMenuOpen = true },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(if (sortByRecent) "Latest location" else "Name")
-                                Text("▾", color = MaterialTheme.colorScheme.primary)
-                            }
-                        }
-                        DropdownMenu(
-                            expanded = sortMenuOpen,
-                            onDismissRequest = { sortMenuOpen = false },
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Latest location") },
-                                onClick = {
-                                    sortByRecent = true
-                                    sortMenuOpen = false
-                                    displayViewModel.updateLibraryPreferences(sortByRecent = true)
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Name") },
-                                onClick = {
-                                    sortByRecent = false
-                                    sortMenuOpen = false
-                                    displayViewModel.updateLibraryPreferences(sortByRecent = false)
-                                },
-                            )
-                        }
-                    }
-                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                    Text(
-                        "Groups",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    TextButton(
-                        onClick = {
-                            showSettings = false
-                            showCreateGroup = true
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Create group", Modifier.fillMaxWidth()) }
-                    TextButton(
-                        onClick = {
-                            showSettings = false
-                            showManageGroups = true
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Manage groups", Modifier.fillMaxWidth()) }
-                    HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                    TextButton(
-                        onClick = {
-                            showSettings = false
-                            showSignOutWarning = true
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            "Sign out of Apple Find My",
-                            Modifier.fillMaxWidth(),
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showSettings = false }) { Text("Done") }
             },
         )
     }
@@ -755,226 +646,481 @@ internal fun FindMyLibraryList(
             },
         )
     }
-
     val busyAll = state.phase == FindMyPhase.REFRESHING ||
         networkState.phase == FindMyNetworkPhase.REFRESHING_REPORTS
-    Scaffold(
-        modifier = Modifier.padding(top = parentHeaderPadding),
-        topBar = {
-            TopAppBar(
-                title = {
-                    if (searchVisible && showList) {
-                        OutlinedTextField(
-                            value = search,
-                            onValueChange = { search = it },
-                            placeholder = { Text("Search devices") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    } else {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(
-                                modifier = Modifier.weight(1f).padding(end = 2.dp),
-                            ) {
-                                Text(
-                                    if (showList) "My devices" else "Find My",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    "${visibleItems.size} device${if (visibleItems.size == 1) "" else "s"}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                    overflow = TextOverflow.Ellipsis,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Box(
-                                modifier = Modifier.widthIn(min = 88.dp, max = 112.dp),
-                            ) {
-                                TextButton(
-                                    onClick = { viewMenuOpen = true },
-                                    contentPadding = PaddingValues(horizontal = 8.dp),
-                                    modifier = Modifier.fillMaxWidth().padding(start = 2.dp),
-                                ) {
-                                    Text(
-                                        if (showList) "Devices" else "Map",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        maxLines = 1,
-                                        softWrap = false,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
-                                }
-                                DropdownMenu(
-                                    expanded = viewMenuOpen,
-                                    onDismissRequest = { viewMenuOpen = false },
-                                ) {
-                                    DropdownMenuItem(
-                                        text = { Text("Map") },
-                                        onClick = {
-                                            showList = false
-                                            viewChosenByUser = true
-                                            viewMenuOpen = false
-                                        },
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Devices") },
-                                        onClick = {
-                                            showList = true
-                                            viewChosenByUser = true
-                                            viewMenuOpen = false
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                    }
-                },
-                actions = {
-                    if (showList) {
-                        IconButton(onClick = {
-                            if (searchVisible) search = ""
-                            searchVisible = !searchVisible
-                        }) {
-                            Icon(
-                                if (searchVisible) Icons.Default.Close else Icons.Default.Search,
-                                contentDescription = if (searchVisible) "Close search" else "Search",
-                            )
-                        }
-                    }
-                    IconButton(
-                        enabled = !busyAll,
-                        onClick = {
-                            if (state.phase == FindMyPhase.READY) onRefresh()
-                            if (networkState.accessories.isNotEmpty()) onRefreshNetwork()
-                        },
-                    ) {
-                        if (busyAll) {
-                            CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
-                        } else {
-                            Icon(Icons.Default.Refresh, contentDescription = "Refresh all devices")
-                        }
-                    }
-                    IconButton(onClick = { overflowOpen = true }) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "More options")
-                    }
-                },
-                // The app-level scaffold already owns system-bar insets.
-                windowInsets = WindowInsets(0),
+
+    StyledBottomSheet(
+        visible = managementVisible,
+        onDismiss = { managementVisible = false },
+        backdrop = backdrop,
+        skipPartiallyExpanded = true,
+        gesturesEnabled = false,
+    ) { innerBackdrop, _ ->
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 560.dp)
+                .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
+                .padding(bottom = 20.dp),
+        ) {
+            Text(
+                "Manage Find My",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
             )
-        },
-    ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
-            Box(Modifier.fillMaxSize().weight(1f)) {
-                if (showList) {
-                    DeviceList(
-                        items = visibleItems,
-                        settings = settings,
-                        refreshing = ::isRefreshing,
-                        onRefresh = ::refreshItem,
-                        onOpen = { editItemKey = it.key },
-                        onRename = { item ->
-                            renameText = displayName(item, entryFor(item, settings))
-                            renameItemKey = item.key
-                        },
-                        onRenameGroup = { groupId, groupName ->
-                            renameGroupText = groupName
-                            renameGroupId = groupId
-                        },
-                        hasLinkCandidate = { item ->
-                            allItems.any { candidate ->
-                                entryFor(candidate, settings).visible &&
-                                canLinkDisplayItems(item, candidate) &&
-                                    likelySameDisplayItem(item, candidate, settings)
-                            }
-                        },
-                        onDrop = { sourceKey, targetKey ->
-                            if (sourceKey != targetKey) {
-                                val targetGroupId = itemByKey[targetKey]
-                                    ?.let { entryFor(it, settings).groupId }
-                                if (targetGroupId != null) {
-                                    itemByKey[sourceKey]?.memberKeys?.let { sourceMemberKeys ->
-                                        displayViewModel.assignGroup(sourceMemberKeys, targetGroupId)
-                                    }
-                                } else {
-                                    droppedSourceKey = sourceKey
-                                    droppedTargetKey = targetKey
-                                    droppedGroupName = ""
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize(),
+            SingleChoiceSegmentedButtonRow(
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+            ) {
+                SegmentedButton(
+                    selected = managementTab == FindMyManagementTab.Sources,
+                    onClick = { managementTab = FindMyManagementTab.Sources },
+                    shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                    modifier = Modifier.weight(1f),
+                ) { Text("Sources") }
+                SegmentedButton(
+                    selected = managementTab == FindMyManagementTab.Settings,
+                    onClick = { managementTab = FindMyManagementTab.Settings },
+                    shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                    modifier = Modifier.weight(1f),
+                ) { Text("Settings") }
+            }
+
+            when (managementTab) {
+                FindMyManagementTab.Sources -> {
+                    SourceStatusRow(
+                        title = "Apple account",
+                        status = appleLibraryStatus(state),
+                        modifier = Modifier.padding(top = 16.dp),
                     )
-                } else {
-                    DeviceMap(
-                        items = visibleItems.filter { it.location != null },
-                        settings = settings,
-                        selectedItemKey = selectedItemKey,
-                        onSelected = { selectedItemKey = it.key },
-                        refreshing = ::isRefreshing,
-                        onRefresh = ::refreshItem,
-                        onOpen = { editItemKey = it.key },
-                        onOpenMap = { item ->
-                            item.location?.let {
-                                openLibraryMap(context, displayName(item, entryFor(item, settings)), it)
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize(),
+                    SourceStatusRow(
+                        title = "Find My network",
+                        status = networkLibraryStatus(networkState),
+                        modifier = Modifier.padding(top = 8.dp),
                     )
-                }
-                if (bothSourcesAvailable && showCombineNotice) {
-                    Card(
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .fillMaxWidth()
-                            .padding(12.dp)
-                            .zIndex(2f),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                        ),
+                    StyledButton(
+                        onClick = {
+                            managementVisible = false
+                            onOpenSourcesSetup()
+                        },
+                        backdrop = innerBackdrop,
+                        modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
                     ) {
-                        Row(
-                            modifier = Modifier.padding(start = 14.dp, top = 4.dp, bottom = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                "Both sources are shown. The same device may appear twice until " +
-                                    "you combine the records.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        Text("Manage sources")
+                    }
+                }
+
+                FindMyManagementTab.Settings -> {
+                    Column(
+                        modifier = Modifier.padding(top = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        StyledToggle(
+                            label = "Show duplicate notice",
+                            description = "Remind me that records from the two sources can represent the same device.",
+                            checked = showCombineNotice,
+                            onCheckedChange = {
+                                displayViewModel.updateLibraryPreferences(showCombineNotice = it)
+                            },
+                        )
+                        StyledToggle(
+                            label = "Show removed devices",
+                            description = "Include devices previously removed from the library view.",
+                            checked = showHidden,
+                            onCheckedChange = {
+                                displayViewModel.updateLibraryPreferences(showHiddenDevices = it)
+                            },
+                        )
+                        StyledToggle(
+                            label = "Dark map",
+                            description = "Invert OpenStreetMap tiles for a darker, higher-contrast map.",
+                            checked = settings.darkMapEnabled,
+                            onCheckedChange = {
+                                displayViewModel.updateLibraryPreferences(darkMapEnabled = it)
+                            },
+                        )
+                        Text(
+                            "Sort devices",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                            SegmentedButton(
+                                selected = sortByRecent,
+                                onClick = {
+                                    displayViewModel.updateLibraryPreferences(sortByRecent = true)
+                                },
+                                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
                                 modifier = Modifier.weight(1f),
-                            )
-                            IconButton(onClick = {
-                                showCombineNotice = false
-                                displayViewModel.updateLibraryPreferences(showCombineNotice = false)
-                            }) {
-                                Icon(Icons.Default.Close, contentDescription = "Dismiss combine notice")
+                            ) { Text("Latest", maxLines = 1) }
+                            SegmentedButton(
+                                selected = !sortByRecent,
+                                onClick = {
+                                    displayViewModel.updateLibraryPreferences(sortByRecent = false)
+                                },
+                                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                                modifier = Modifier.weight(1f),
+                            ) { Text("Name") }
+                        }
+                        HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                        StyledButton(
+                            onClick = {
+                                managementVisible = false
+                                showCreateGroup = true
+                            },
+                            backdrop = innerBackdrop,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Create group") }
+                        StyledButton(
+                            onClick = {
+                                managementVisible = false
+                                showManageGroups = true
+                            },
+                            backdrop = innerBackdrop,
+                            modifier = Modifier.fillMaxWidth(),
+                            materialButtonStyle = MaterialButtonStyle.Outlined,
+                        ) { Text("Manage groups") }
+                        StyledButton(
+                            onClick = {
+                                if (state.phase == FindMyPhase.READY) onRefresh()
+                                if (networkState.accessories.isNotEmpty()) onRefreshNetwork()
+                            },
+                            backdrop = innerBackdrop,
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !busyAll,
+                            materialButtonStyle = MaterialButtonStyle.Outlined,
+                        ) {
+                            if (busyAll) {
+                                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Refreshing all devices")
+                            } else {
+                                Icon(Icons.Default.Refresh, contentDescription = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Refresh all devices")
                             }
+                        }
+                        HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                        StyledButton(
+                            onClick = {
+                                managementVisible = false
+                                showSignOutWarning = true
+                            },
+                            backdrop = innerBackdrop,
+                            modifier = Modifier.fillMaxWidth(),
+                            materialButtonStyle = MaterialButtonStyle.Normal,
+                        ) {
+                            Text("Sign out of Apple Find My", color = MaterialTheme.colorScheme.error)
                         }
                     }
                 }
             }
         }
     }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface),
+    ) {
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(MaterialTheme.colorScheme.surface)
+                .layerBackdrop(backdrop),
+        )
+        when (viewMode) {
+            FindMyViewMode.Devices -> DeviceList(
+                items = listItems,
+                settings = settings,
+                loading = busyAll && listItems.isEmpty(),
+                refreshing = ::isRefreshing,
+                onRefresh = ::refreshItem,
+                onOpen = { editItemKey = it.key },
+                onRenameGroup = { groupId, groupName ->
+                    renameGroupText = groupName
+                    renameGroupId = groupId
+                },
+                hasLinkCandidate = { item ->
+                    allItems.any { candidate ->
+                        entryFor(candidate, settings).visible &&
+                            canLinkDisplayItems(item, candidate) &&
+                            likelySameDisplayItem(item, candidate, settings)
+                    }
+                },
+                onDrop = { sourceKey, targetKey ->
+                    if (sourceKey != targetKey) {
+                        val targetGroupId = itemByKey[targetKey]
+                            ?.let { entryFor(it, settings).groupId }
+                        if (targetGroupId != null) {
+                            itemByKey[sourceKey]?.memberKeys?.let { sourceMemberKeys ->
+                                displayViewModel.assignGroup(sourceMemberKeys, targetGroupId)
+                            }
+                        } else {
+                            droppedSourceKey = sourceKey
+                            droppedTargetKey = targetKey
+                            droppedGroupName = ""
+                        }
+                    }
+                },
+                contentTopPadding = chromeTopPadding + if (searchVisible) 136.dp else 76.dp,
+                modifier = Modifier.fillMaxSize(),
+            )
+
+            FindMyViewMode.Map -> DeviceMap(
+                items = locatedItems,
+                settings = settings,
+                selectedItemKey = selectedItemKey,
+                onSelected = { selectedItemKey = it.key },
+                refreshing = ::isRefreshing,
+                onRefresh = ::refreshItem,
+                onOpen = { editItemKey = it.key },
+                onOpenMap = { item ->
+                    item.location?.let { location ->
+                        openLibraryMap(
+                            context,
+                            displayName(item, entryFor(item, settings)),
+                            location,
+                        )
+                    }
+                },
+                backdrop = backdrop,
+                restoredViewport = restoredViewport,
+                onViewportChanged = { viewport ->
+                    viewportLatitude = viewport.latitude
+                    viewportLongitude = viewport.longitude
+                    viewportZoom = viewport.zoom
+                },
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+
+        if (viewMode == FindMyViewMode.Devices && searchVisible) {
+            OutlinedTextField(
+                value = search,
+                onValueChange = { search = it },
+                placeholder = { Text("Search devices") },
+                singleLine = true,
+                trailingIcon = {
+                    IconButton(
+                        onClick = {
+                            search = ""
+                            searchVisible = false
+                        },
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "Close device search")
+                    }
+                },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, top = chromeTopPadding + 68.dp, end = 16.dp)
+                    .zIndex(3f),
+            )
+        }
+
+        if (viewMode == FindMyViewMode.Devices && !searchVisible) {
+            StyledFloatingSurface(
+                backdrop = backdrop,
+                onClick = { searchVisible = true },
+                contentDescription = "Search devices",
+                shape = CircleShape,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(start = 16.dp, top = chromeTopPadding + 12.dp)
+                    .size(48.dp)
+                    .zIndex(4f),
+            ) {
+                Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.align(Alignment.Center))
+            }
+        }
+
+        FindMyModePill(
+            mode = viewMode,
+            backdrop = backdrop,
+            onModeChanged = { mode ->
+                viewMode = mode
+                viewChosenByUser = true
+                if (mode != FindMyViewMode.Devices) searchVisible = false
+            },
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = chromeTopPadding + 12.dp)
+                .zIndex(4f),
+        )
+
+        StyledButton(
+            onClick = { managementVisible = true },
+            backdrop = backdrop,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = chromeTopPadding + 12.dp, end = 16.dp)
+                .width(64.dp)
+                .height(48.dp)
+                .zIndex(4f),
+        ) {
+            Icon(
+                Icons.Default.MoreVert,
+                contentDescription = "Manage Find My",
+                modifier = Modifier.size(20.dp),
+            )
+        }
+
+        state.message?.let { message ->
+            StyledFloatingSurface(
+                backdrop = backdrop,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(16.dp)
+                    .zIndex(5f),
+            ) {
+                Text(message, style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+}
+
+@Composable
+private fun FindMyModePill(
+    mode: FindMyViewMode,
+    backdrop: LayerBackdrop,
+    onModeChanged: (FindMyViewMode) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier = modifier.width(144.dp).height(48.dp)) {
+        StyledFloatingSurface(
+            backdrop = backdrop,
+            shape = RoundedCornerShape(22.dp),
+            modifier = Modifier
+                .align(Alignment.Center)
+                .fillMaxWidth()
+                .height(40.dp),
+        ) { }
+        Row(Modifier.fillMaxSize()) {
+            FindMyModeSegment(
+                label = "Devices",
+                selected = mode == FindMyViewMode.Devices,
+                onClick = { onModeChanged(FindMyViewMode.Devices) },
+                modifier = Modifier.weight(1f),
+            )
+            FindMyModeSegment(
+                label = "Map",
+                selected = mode == FindMyViewMode.Map,
+                onClick = { onModeChanged(FindMyViewMode.Map) },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun FindMyModeSegment(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .semantics {
+                this.selected = selected
+                role = Role.Tab
+                contentDescription = "$label view"
+            }
+            .clickable(role = Role.Tab, onClick = onClick)
+            .padding(4.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            color = when {
+                !selected -> Color.Transparent
+                LocalDesignSystem.current == DesignSystem.Apple -> Color.White.copy(alpha = 0.14f)
+                else -> MaterialTheme.colorScheme.secondaryContainer
+            },
+            shape = RoundedCornerShape(18.dp),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SourceStatusRow(
+    title: String,
+    status: String,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(
+                    status,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+        }
+    }
+}
+
+private fun appleLibraryStatus(state: FindMyUiState): String = when (state.phase) {
+    FindMyPhase.RESTORING -> "Restoring session"
+    FindMyPhase.SIGNED_OUT -> "Not connected"
+    FindMyPhase.SIGNING_IN -> "Signing in"
+    FindMyPhase.NEEDS_TWO_FACTOR -> "Verification required"
+    FindMyPhase.REFRESHING -> "Connected · refreshing ${state.devices.size} devices"
+    FindMyPhase.READY -> "Connected · ${state.devices.size} devices"
+    FindMyPhase.SESSION_ERROR, FindMyPhase.ERROR -> "Needs attention"
+}
+
+private fun networkLibraryStatus(state: FindMyNetworkUiState): String = when (state.phase) {
+    FindMyNetworkPhase.RESTORING -> "Restoring session"
+    FindMyNetworkPhase.SIGNED_OUT -> "Not connected"
+    FindMyNetworkPhase.SIGNING_IN -> "Signing in"
+    FindMyNetworkPhase.CHOOSE_TWO_FACTOR_METHOD,
+    FindMyNetworkPhase.ENTER_TWO_FACTOR_CODE -> "Verification required"
+    FindMyNetworkPhase.READY_TO_RECOVER,
+    FindMyNetworkPhase.OPENING_RECOVERY,
+    FindMyNetworkPhase.CHOOSE_RECOVERY_DEVICE,
+    FindMyNetworkPhase.UNLOCKING_KEYCHAIN,
+    FindMyNetworkPhase.CHOOSE_ACCESSORIES,
+    FindMyNetworkPhase.IMPORTING_ACCESSORIES -> "Connected · accessory recovery in progress"
+    FindMyNetworkPhase.REFRESHING_REPORTS -> "Connected · refreshing ${state.accessories.size} accessories"
+    FindMyNetworkPhase.READY -> "Connected · ${state.accessories.size} accessories"
+    FindMyNetworkPhase.ERROR -> "Needs attention"
 }
 
 @Composable
 private fun DeviceList(
     items: List<FindMyDisplayItem>,
     settings: FindMyDisplaySettings,
+    loading: Boolean,
     refreshing: (FindMyDisplayItem) -> Boolean,
     onRefresh: (FindMyDisplayItem) -> Unit,
     onOpen: (FindMyDisplayItem) -> Unit,
-    onRename: (FindMyDisplayItem) -> Unit,
     onRenameGroup: (String, String) -> Unit,
     hasLinkCandidate: (FindMyDisplayItem) -> Boolean,
     onDrop: (String, String) -> Unit,
+    contentTopPadding: androidx.compose.ui.unit.Dp,
     modifier: Modifier = Modifier,
 ) {
     val rowBounds = remember { mutableStateMapOf<String, Rect>() }
@@ -999,57 +1145,79 @@ private fun DeviceList(
             )
         }
     }
-    LazyColumn(modifier = modifier.background(MaterialTheme.colorScheme.surface)) {
+
+    LazyColumn(
+        modifier = modifier.background(MaterialTheme.colorScheme.surface),
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            top = contentTopPadding,
+            end = 16.dp,
+            bottom = 24.dp,
+        ),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         if (items.isEmpty()) {
-            item {
-                Column(
-                    modifier = Modifier.fillParentMaxSize().padding(32.dp),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally,
+            item(key = "empty") {
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(top = 24.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer,
                 ) {
-                    Icon(
-                        Icons.Default.Place,
-                        contentDescription = null,
-                        modifier = Modifier.size(48.dp),
-                        tint = MaterialTheme.colorScheme.outline,
-                    )
-                    Text(
-                        "No devices in this view",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(top = 12.dp),
-                    )
-                    Text("Use the options menu to restore hidden devices.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        if (loading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(40.dp),
+                                strokeWidth = 3.dp,
+                            )
+                        } else {
+                            Icon(
+                                Icons.Default.Place,
+                                contentDescription = null,
+                                modifier = Modifier.size(40.dp),
+                                tint = MaterialTheme.colorScheme.outline,
+                            )
+                        }
+                        Text(
+                            if (loading) "Refreshing devices" else "No devices in this view",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.padding(top = 10.dp),
+                        )
+                        Text(
+                            if (loading) {
+                                "Loading the latest devices and locations from your connected sources."
+                            } else {
+                                "Change search or restore removed devices from Manage."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
                 }
             }
         }
+
         if (items.size > 1) {
             item(key = "grouping-tip") {
                 Text(
-                    "Tap a device name to rename it · long-press and drag onto another device to group",
+                    "Open a device for rename, group, combine, and visibility controls. Long-press drag remains a grouping shortcut.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surfaceContainerLow)
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
                 )
             }
         }
-        sections.forEach { section ->
+
+        sections.forEachIndexed { sectionIndex, section ->
             item(key = "section:${section.key}") {
                 val canRename = section.key != UNGROUPED_SECTION_KEY
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surfaceContainer)
-                        .then(
-                            if (canRename) {
-                                Modifier.clickable { onRenameGroup(section.key, section.name) }
-                            } else {
-                                Modifier
-                            },
-                        )
-                        .padding(horizontal = 16.dp, vertical = 9.dp),
+                        .padding(top = if (sectionIndex == 0) 0.dp else 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
@@ -1059,25 +1227,29 @@ private fun DeviceList(
                         modifier = Modifier.weight(1f),
                     )
                     if (canRename) {
-                        Icon(
-                            Icons.Default.Edit,
-                            contentDescription = "Rename ${section.name}",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp),
-                        )
+                        IconButton(
+                            onClick = { onRenameGroup(section.key, section.name) },
+                            modifier = Modifier.size(48.dp),
+                        ) {
+                            Icon(
+                                Icons.Default.Edit,
+                                contentDescription = "Rename ${section.name} group",
+                                modifier = Modifier.size(20.dp),
+                            )
+                        }
                     }
                 }
             }
+
             items(section.items, key = FindMyDisplayItem::key) { item ->
                 val entry = entryFor(item, settings)
                 DeviceListRow(
                     item = item,
                     name = displayName(item, entry),
                     refreshing = refreshing(item),
+                    hasLinkCandidate = hasLinkCandidate(item),
                     onRefresh = { onRefresh(item) },
                     onOpen = { onOpen(item) },
-                    onRename = { onRename(item) },
-                    hasLinkCandidate = hasLinkCandidate(item),
                     isDragging = draggingKey == item.key,
                     isDropTarget = dragOverKey == item.key,
                     onPositioned = { coordinates -> rowBounds[item.key] = coordinates.boundsInRoot() },
@@ -1105,10 +1277,8 @@ private fun DeviceList(
                         dragOverKey = null
                     },
                 )
-                HorizontalDivider(modifier = Modifier.padding(start = 72.dp))
             }
         }
-        item { Spacer(Modifier.height(24.dp)) }
     }
 }
 
@@ -1120,7 +1290,6 @@ private fun DeviceListRow(
     hasLinkCandidate: Boolean,
     onRefresh: () -> Unit,
     onOpen: () -> Unit,
-    onRename: () -> Unit,
     isDragging: Boolean,
     isDropTarget: Boolean,
     onPositioned: (androidx.compose.ui.layout.LayoutCoordinates) -> Unit,
@@ -1133,9 +1302,10 @@ private fun DeviceListRow(
     val currentOnDragPosition = rememberUpdatedState(onDragPosition)
     val currentOnDragEnd = rememberUpdatedState(onDragEnd)
     val currentOnDragCancel = rememberUpdatedState(onDragCancel)
-    Row(
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
+            .height(80.dp)
             .onGloballyPositioned(onPositioned)
             .pointerInput(item.key) {
                 detectDragGesturesAfterLongPress(
@@ -1148,81 +1318,97 @@ private fun DeviceListRow(
                     onDragCancel = { currentOnDragCancel.value() },
                 )
             }
-            .clickable(onClick = onOpen)
-            .background(
-                when {
-                    isDropTarget -> MaterialTheme.colorScheme.primaryContainer
-                    isDragging -> MaterialTheme.colorScheme.surfaceContainerHigh
-                    else -> Color.Transparent
-                },
-            )
-            .padding(start = 16.dp, top = 13.dp, end = 8.dp, bottom = 13.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        DeviceGlyph(name)
-        Column(modifier = Modifier.weight(1f).padding(start = 16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    name,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .weight(1f, fill = false)
-                        .clickable(onClick = onRename),
-                )
-                if (item.location == null) {
-                    Icon(
-                        Icons.Default.Warning,
-                        contentDescription = "No known location",
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(start = 7.dp).size(18.dp),
-                    )
+            .semantics {
+                stateDescription = when {
+                    isDropTarget -> "Grouping drop target"
+                    isDragging -> "Dragging for grouping"
+                    refreshing -> "Refreshing location"
+                    item.location == null -> "No known location"
+                    else -> "Device row"
                 }
             }
-            Text(
-                latestReportText(item.location),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                if (item.isLinked) item.sourceLabel
-                else item.locationSource?.label ?: item.sourceLabel,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.outline,
-                maxLines = 1,
-            )
-            identityText(item)?.let { identity ->
+            .clickable(onClick = onOpen),
+        shape = RoundedCornerShape(18.dp),
+        color = when {
+            isDropTarget -> MaterialTheme.colorScheme.primaryContainer
+            isDragging -> MaterialTheme.colorScheme.surfaceContainerHigh
+            else -> MaterialTheme.colorScheme.surfaceContainer
+        },
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize().padding(start = 12.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            DeviceGlyph(name, size = 40)
+            Column(
+                modifier = Modifier.weight(1f).padding(start = 12.dp, end = 8.dp),
+                verticalArrangement = Arrangement.Center,
+            ) {
                 Text(
-                    identity,
+                    name,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (item.location == null) {
+                        Icon(
+                            Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                    }
+                    Text(
+                        latestReportText(item.location),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                val identity = identityText(item)
+                Text(
+                    buildString {
+                        append(if (item.isLinked) item.sourceLabel else item.locationSource?.label ?: item.sourceLabel)
+                        if (identity != null) append(" · ").append(identity)
+                        if (hasLinkCandidate && !item.isLinked) append(" · Possible duplicate")
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            if (hasLinkCandidate && !item.isLinked) {
-                Text(
-                    "Possible duplicate · tap for combine options",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-        IconButton(onClick = onRefresh, enabled = !refreshing) {
-            if (refreshing) {
-                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-            } else {
-                Icon(Icons.Default.Refresh, contentDescription = "Refresh ${name}")
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(
+                    onClick = onRefresh,
+                    enabled = !refreshing,
+                    modifier = Modifier.size(48.dp),
+                ) {
+                    if (refreshing) {
+                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh $name")
+                    }
+                }
+                IconButton(
+                    onClick = onOpen,
+                    modifier = Modifier.size(48.dp),
+                ) {
+                    Icon(Icons.Default.MoreVert, contentDescription = "More options for $name")
+                }
             }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun DeviceMap(
     items: List<FindMyDisplayItem>,
@@ -1233,65 +1419,202 @@ private fun DeviceMap(
     onRefresh: (FindMyDisplayItem) -> Unit,
     onOpen: (FindMyDisplayItem) -> Unit,
     onOpenMap: (FindMyDisplayItem) -> Unit,
+    backdrop: LayerBackdrop,
+    restoredViewport: FindMyViewportState?,
+    onViewportChanged: (FindMyViewportState) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (items.isEmpty()) {
-        Box(modifier.background(MaterialTheme.colorScheme.surface), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Default.Place, null, Modifier.size(52.dp), MaterialTheme.colorScheme.outline)
-                Text("No known locations", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Refresh a device or switch to Devices above.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+        Box(
+            modifier = modifier.background(MaterialTheme.colorScheme.surface),
+            contentAlignment = Alignment.Center,
+        ) {
+            Surface(
+                shape = RoundedCornerShape(22.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer,
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Icon(Icons.Default.Place, null, Modifier.size(44.dp), MaterialTheme.colorScheme.outline)
+                    Text("No known locations", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Refresh a device or switch to Devices.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
             }
         }
         return
     }
-    val pagerState = rememberPagerState(
-        initialPage = items.indexOfFirst { it.key == selectedItemKey }.coerceAtLeast(0),
-        pageCount = { items.size },
-    )
+
+    val normalizedKey = FindMyMapUiPolicy.normalizeSelectedKey(
+        selectedKey = selectedItemKey,
+        locatedKeys = items.map(FindMyDisplayItem::key),
+    ) ?: return
+    val initialIndex = items.indexOfFirst { it.key == normalizedKey }.coerceAtLeast(0)
+    val pagerState = rememberPagerState(initialPage = initialIndex, pageCount = { items.size })
     val scope = rememberCoroutineScope()
+    var chooserVisible by rememberSaveable { mutableStateOf(false) }
+    var chooserSearch by rememberSaveable { mutableStateOf("") }
+    var focusRequestToken by rememberSaveable { mutableStateOf(0L) }
+    var pagerSyncTargetKey by remember { mutableStateOf<String?>(null) }
     val itemKeys = items.map(FindMyDisplayItem::key)
-    LaunchedEffect(itemKeys, selectedItemKey) {
-        val selectedIndex = items.indexOfFirst { it.key == selectedItemKey }
-        val targetIndex = selectedIndex.takeIf { it >= 0 } ?: 0
-        if (targetIndex != pagerState.currentPage) pagerState.scrollToPage(targetIndex)
-        if (selectedItemKey == null) items.getOrNull(targetIndex)?.let(onSelected)
-    }
-    // Only publish page -> key after an actual swipe settles. List reordering is handled above
-    // with the stable selected key as the source of truth.
-    LaunchedEffect(pagerState.isScrollInProgress) {
-        if (!pagerState.isScrollInProgress) {
-            items.getOrNull(pagerState.settledPage)?.let(onSelected)
+
+    LaunchedEffect(itemKeys, normalizedKey) {
+        val targetIndex = items.indexOfFirst { it.key == normalizedKey }.coerceAtLeast(0)
+        val currentKey = items.getOrNull(pagerState.currentPage)?.key
+        if (currentKey != normalizedKey || pagerState.currentPage != targetIndex) {
+            pagerSyncTargetKey = normalizedKey
+            pagerState.scrollToPage(targetIndex)
         }
     }
+
+    LaunchedEffect(pagerState.isScrollInProgress, itemKeys) {
+        if (!pagerState.isScrollInProgress) {
+            val item = items.getOrNull(pagerState.settledPage) ?: return@LaunchedEffect
+            if (pagerSyncTargetKey == item.key) {
+                pagerSyncTargetKey = null
+            } else if (item.key != normalizedKey) {
+                onSelected(item)
+                focusRequestToken += 1L
+            }
+        }
+    }
+
+    fun selectExplicitly(item: FindMyDisplayItem, synchronizePager: Boolean) {
+        onSelected(item)
+        focusRequestToken += 1L
+        if (synchronizePager) {
+            val index = items.indexOfFirst { it.key == item.key }
+            if (index >= 0 && index != pagerState.currentPage) {
+                pagerSyncTargetKey = item.key
+                scope.launch { pagerState.animateScrollToPage(index) }
+            }
+        }
+    }
+
+    StyledBottomSheet(
+        visible = chooserVisible,
+        onDismiss = { chooserVisible = false },
+        backdrop = backdrop,
+    ) { _, _ ->
+        val chooserQuery = chooserSearch.trim().lowercase(Locale.ROOT)
+        val chooserItems = items.filter { item ->
+            chooserQuery.isBlank() || listOf(
+                displayName(item, entryFor(item, settings)),
+                item.modelLabel.orEmpty(),
+                identityText(item).orEmpty(),
+            ).joinToString(" ").lowercase(Locale.ROOT).contains(chooserQuery)
+        }
+        Column(
+            modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = 16.dp),
+        ) {
+            Text(
+                "All located devices",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            OutlinedTextField(
+                value = chooserSearch,
+                onValueChange = { chooserSearch = it },
+                placeholder = { Text("Search located devices") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+            )
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp).padding(top = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(chooserItems, key = FindMyDisplayItem::key) { item ->
+                    val name = displayName(item, entryFor(item, settings))
+                    val isSelected = item.key == normalizedKey
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 64.dp)
+                            .semantics {
+                                selected = isSelected
+                                stateDescription = if (isSelected) "Selected device" else "Located device"
+                            }
+                            .clickable {
+                                chooserVisible = false
+                                chooserSearch = ""
+                                selectExplicitly(item, synchronizePager = true)
+                            },
+                        shape = RoundedCornerShape(16.dp),
+                        color = if (isSelected) {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainer
+                        },
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            DeviceGlyph(name, size = 40)
+                            Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                                Text(name, style = MaterialTheme.typography.titleSmall, maxLines = 1)
+                                Text(
+                                    latestReportText(item.location),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                )
+                            }
+                            if (isSelected) {
+                                Text(
+                                    "Selected",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Box(modifier) {
         OpenStreetMap(
             items = items,
             settings = settings,
-            selectedItemKey = selectedItemKey ?: items.first().key,
-            onSelected = { item ->
-                onSelected(item)
-                val index = items.indexOfFirst { it.key == item.key }
-                if (index >= 0) scope.launch { pagerState.animateScrollToPage(index) }
+            selectedItemKey = normalizedKey,
+            focusRequestToken = focusRequestToken,
+            restoredViewport = restoredViewport,
+            onViewportChanged = onViewportChanged,
+            onMarkerSelected = { key ->
+                items.firstOrNull { it.key == key }?.let { item ->
+                    selectExplicitly(item, synchronizePager = true)
+                }
             },
             modifier = Modifier.fillMaxSize(),
         )
+
         HorizontalPager(
             state = pagerState,
             key = { items[it].key },
-            modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding(),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .heightIn(min = 144.dp, max = 184.dp),
         ) { page ->
             val item = items[page]
-            OpenTagDeviceCard(
+            SelectedDeviceCard(
                 item = item,
                 name = displayName(item, entryFor(item, settings)),
                 refreshing = refreshing(item),
+                positionLabel = "${page + 1}/${items.size}",
                 onRefresh = { onRefresh(item) },
                 onOpen = { onOpen(item) },
                 onOpenMap = { onOpenMap(item) },
+                onChoose = { chooserVisible = true },
+                backdrop = backdrop,
                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 12.dp),
             )
         }
@@ -1299,63 +1622,133 @@ private fun DeviceMap(
 }
 
 @Composable
-private fun OpenTagDeviceCard(
+private fun SelectedDeviceCard(
     item: FindMyDisplayItem,
     name: String,
     refreshing: Boolean,
+    positionLabel: String,
     onRefresh: () -> Unit,
     onOpen: () -> Unit,
     onOpenMap: () -> Unit,
+    onChoose: () -> Unit,
+    backdrop: LayerBackdrop,
     modifier: Modifier = Modifier,
 ) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+    StyledFloatingSurface(
+        backdrop = backdrop,
+        selected = true,
+        contentDescription = "Selected device $name",
+        modifier = modifier.fillMaxWidth().heightIn(min = 120.dp, max = 160.dp),
+        shape = RoundedCornerShape(24.dp),
     ) {
-        Column(Modifier.padding(top = 15.dp, bottom = 10.dp)) {
+        Column(Modifier.fillMaxSize()) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                DeviceGlyph(name, size = 56)
-                Column(Modifier.weight(1f).padding(start = 16.dp)) {
+                DeviceGlyph(name, size = 44)
+                Column(
+                    modifier = Modifier.weight(1f).padding(start = 10.dp),
+                    verticalArrangement = Arrangement.Center,
+                ) {
                     Text(
                         name,
-                        style = MaterialTheme.typography.titleLarge,
+                        fontSize = 15.sp,
+                        lineHeight = 18.sp,
                         fontWeight = FontWeight.SemiBold,
-                        maxLines = 2,
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
                         libraryLocationDescription(item.location),
-                        style = MaterialTheme.typography.bodyMedium,
+                        fontSize = 11.sp,
+                        lineHeight = 12.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
                         latestReportText(item.location),
-                        style = MaterialTheme.typography.bodySmall,
+                        fontSize = 11.sp,
+                        lineHeight = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
-                    identityText(item)?.let { identity ->
-                        Text(
-                            identity,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.outline,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
+                    Text(
+                        identityText(item) ?: (item.locationSource?.label ?: item.sourceLabel),
+                        fontSize = 10.sp,
+                        lineHeight = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
             Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                RoundCardAction(Icons.Default.Place, "Directions", false, onOpenMap)
-                RoundCardAction(Icons.Default.Refresh, "Refresh", refreshing, onRefresh)
-                RoundCardAction(Icons.Default.MoreVert, "More", false, onOpen)
+                CompactCardAction(
+                    icon = Icons.Default.Place,
+                    label = "Directions",
+                    loading = false,
+                    onClick = onOpenMap,
+                    modifier = Modifier.weight(1f),
+                )
+                CompactCardAction(
+                    icon = Icons.Default.Refresh,
+                    label = "Refresh",
+                    loading = refreshing,
+                    onClick = onRefresh,
+                    modifier = Modifier.weight(1f),
+                )
+                CompactCardAction(
+                    icon = Icons.Default.MoreVert,
+                    label = "More",
+                    loading = false,
+                    onClick = onOpen,
+                    modifier = Modifier.weight(1f),
+                )
+                CompactCardAction(
+                    icon = Icons.Default.Search,
+                    label = "All $positionLabel",
+                    loading = false,
+                    onClick = onChoose,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactCardAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    loading: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .semantics { contentDescription = label }
+            .clickable(enabled = !loading, role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (loading) {
+            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(Modifier.width(3.dp))
+                Text(
+                    label,
+                    fontSize = 10.5.sp,
+                    lineHeight = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }
@@ -1372,7 +1765,7 @@ private fun RoundCardAction(
         Surface(
             shape = CircleShape,
             color = MaterialTheme.colorScheme.surfaceContainerHighest,
-            modifier = Modifier.size(44.dp).clickable(enabled = !loading, onClick = onClick),
+            modifier = Modifier.size(48.dp).clickable(enabled = !loading, onClick = onClick),
         ) {
             Box(contentAlignment = Alignment.Center) {
                 if (loading) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
@@ -1382,11 +1775,12 @@ private fun RoundCardAction(
         Text(label, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 4.dp))
     }
 }
-
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun DeviceDetailsDialog(
     item: FindMyDisplayItem,
     entry: FindMyDisplayEntry,
+    backdrop: LayerBackdrop,
     groupName: String?,
     refreshing: Boolean,
     onDismiss: () -> Unit,
@@ -1397,13 +1791,31 @@ private fun DeviceDetailsDialog(
     onToggleVisible: () -> Unit,
     onLink: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
+    StyledBottomSheet(
+        visible = true,
+        onDismiss = onDismiss,
+        backdrop = backdrop,
+        skipPartiallyExpanded = true,
+        gesturesEnabled = false,
+    ) { innerBackdrop, _ ->
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 560.dp)
+                .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
+                .padding(bottom = 20.dp),
+        ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 DeviceGlyph(displayName(item, entry))
                 Column(Modifier.padding(start = 14.dp)) {
-                    Text(displayName(item, entry), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        displayName(item, entry),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                     Text(
                         item.modelLabel ?: item.sourceLabel,
                         style = MaterialTheme.typography.bodySmall,
@@ -1420,76 +1832,99 @@ private fun DeviceDetailsDialog(
                     }
                 }
             }
-        },
-        text = {
-            Column {
-                Text("Latest report", fontWeight = FontWeight.SemiBold)
-                Text(libraryLocationDescription(item.location))
+            Text(
+                "Latest report",
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(top = 18.dp),
+            )
+            Text(libraryLocationDescription(item.location))
+            Text(
+                "${if (item.isLinked) item.sourceLabel else item.locationSource?.label ?: item.sourceLabel} · " +
+                    latestReportText(item.location),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            item.location?.horizontalAccuracyMeters?.let {
                 Text(
-                    "${if (item.isLinked) item.sourceLabel else item.locationSource?.label ?: item.sourceLabel} · " +
-                        latestReportText(item.location),
+                    "Accuracy ±${it.roundToInt()} m",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                item.location?.horizontalAccuracyMeters?.let {
-                    Text(
-                        "Accuracy ±${it.roundToInt()} m",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                groupName?.let {
-                    Text("Group: ${it}", modifier = Modifier.padding(top = 6.dp))
-                }
-                if (item.isLinked) {
-                    HorizontalDivider(Modifier.padding(vertical = 10.dp))
-                    item.webDevice?.location?.let {
-                        SourceLocationLine(FindMyDisplaySource.APPLE_ACCOUNT, it)
-                    }
-                    item.networkAccessory?.location?.let {
-                        SourceLocationLine(FindMyDisplaySource.FIND_MY_NETWORK, it)
-                    }
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                ) {
-                    RoundCardAction(Icons.Default.Refresh, "Refresh", refreshing, onRefresh)
-                    onOpenMap?.let { openMap ->
-                        RoundCardAction(Icons.Default.Place, "Map", false, openMap)
-                    }
-                    RoundCardAction(Icons.Default.Edit, "Rename", false, onRename)
-                }
+            }
+            groupName?.let {
+                Text("Group: $it", modifier = Modifier.padding(top = 6.dp))
+            }
+            if (item.isLinked) {
                 HorizontalDivider(Modifier.padding(vertical = 10.dp))
-                TextButton(onClick = onGroup, modifier = Modifier.fillMaxWidth()) {
-                    Text("Move to group", modifier = Modifier.fillMaxWidth())
+                item.webDevice?.location?.let {
+                    SourceLocationLine(FindMyDisplaySource.APPLE_ACCOUNT, it)
                 }
-                TextButton(onClick = onLink, modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        if (item.isLinked) "Separate Apple and network records"
-                        else "Combine with another source",
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                TextButton(onClick = onToggleVisible, modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        if (entry.visible) "Remove from view" else "Restore to view",
-                        modifier = Modifier.fillMaxWidth(),
-                        color = MaterialTheme.colorScheme.error,
-                    )
+                item.networkAccessory?.location?.let {
+                    SourceLocationLine(FindMyDisplaySource.FIND_MY_NETWORK, it)
                 }
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
-    )
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 14.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                RoundCardAction(Icons.Default.Refresh, "Refresh", refreshing, onRefresh)
+                onOpenMap?.let { openMap ->
+                    RoundCardAction(Icons.Default.Place, "Map", false, openMap)
+                }
+                RoundCardAction(Icons.Default.Edit, "Rename", false, onRename)
+            }
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
+            StyledButton(
+                onClick = onGroup,
+                backdrop = innerBackdrop,
+                modifier = Modifier.fillMaxWidth(),
+                materialButtonStyle = MaterialButtonStyle.Outlined,
+            ) { Text("Move to group") }
+            StyledButton(
+                onClick = onLink,
+                backdrop = innerBackdrop,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                materialButtonStyle = MaterialButtonStyle.Outlined,
+            ) {
+                Text(
+                    if (item.isLinked) "Separate Apple and network records"
+                    else "Combine with another source",
+                )
+            }
+            StyledButton(
+                onClick = onToggleVisible,
+                backdrop = innerBackdrop,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                materialButtonStyle = MaterialButtonStyle.Normal,
+            ) {
+                Text(
+                    if (entry.visible) "Remove from view" else "Restore to view",
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            StyledButton(
+                onClick = onDismiss,
+                backdrop = innerBackdrop,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            ) { Text("Done") }
+        }
+    }
 }
+private data class MarkerGlyphCacheKey(
+    val glyph: String,
+    val color: Int,
+    val densityBucket: Int,
+)
 
 @Composable
 private fun OpenStreetMap(
     items: List<FindMyDisplayItem>,
     settings: FindMyDisplaySettings,
     selectedItemKey: String,
-    onSelected: (FindMyDisplayItem) -> Unit,
+    focusRequestToken: Long,
+    restoredViewport: FindMyViewportState?,
+    onViewportChanged: (FindMyViewportState) -> Unit,
+    onMarkerSelected: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -1505,7 +1940,27 @@ private fun OpenStreetMap(
             overlays.add(CopyrightOverlay(context))
         }
     }
-    var fittedSignature by remember { mutableStateOf<String?>(null) }
+    val markers = remember(map) { mutableMapOf<String, Marker>() }
+    val markerVisuals = remember(map) { mutableMapOf<String, MarkerGlyphCacheKey>() }
+    val glyphCache = remember(map) { mutableMapOf<MarkerGlyphCacheKey, BitmapDrawable>() }
+    var previousSelectedKey by remember { mutableStateOf<String?>(null) }
+    var initialCameraApplied by remember { mutableStateOf(false) }
+
+    val selectedLocation = items.firstOrNull { it.key == selectedItemKey }?.location
+    val currentFocusedSnapshot = FindMyFocusedDeviceSnapshot(
+        key = selectedItemKey,
+        coordinate = selectedLocation?.let { FindMyMapCoordinate(it.latitude, it.longitude) },
+    )
+    var previousFocusedSnapshot by remember { mutableStateOf(currentFocusedSnapshot) }
+    var previousFocusRequestToken by remember { mutableStateOf(focusRequestToken) }
+
+    LaunchedEffect(map, settings.darkMapEnabled) {
+        map.overlayManager.tilesOverlay.setColorFilter(
+            if (settings.darkMapEnabled) TilesOverlay.INVERT_COLORS else null,
+        )
+        map.invalidate()
+    }
+
     DisposableEffect(map, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
@@ -1519,44 +1974,84 @@ private fun OpenStreetMap(
             map.onResume()
         }
         onDispose {
+            val center = map.mapCenter
+            onViewportChanged(
+                FindMyViewportState(
+                    latitude = center.latitude,
+                    longitude = center.longitude,
+                    zoom = map.zoomLevelDouble,
+                ),
+            )
             lifecycleOwner.lifecycle.removeObserver(observer)
             map.onPause()
             map.onDetach()
         }
     }
+
     AndroidView(
         factory = { map },
         modifier = modifier,
         update = { mapView ->
-            mapView.overlays.removeAll { it is Marker }
+            val desired = items.associateBy(FindMyDisplayItem::key)
+            val removedKeys = markers.keys.filterNot(desired::containsKey)
+            removedKeys.forEach { key ->
+                markers.remove(key)?.let(mapView.overlays::remove)
+                markerVisuals.remove(key)
+            }
+
+            val densityBucket = (context.resources.displayMetrics.density * 100f).roundToInt()
+            val selectionChanged = previousSelectedKey != selectedItemKey
             items.forEach { item ->
                 val location = item.location ?: return@forEach
-                Marker(mapView).also { marker ->
-                    marker.position = GeoPoint(location.latitude, location.longitude)
-                    marker.title = displayName(item, entryFor(item, settings))
-                    marker.snippet = latestReportText(location)
-                    marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
-                    marker.icon = markerDrawable(
-                        context,
-                        marker.title,
-                        if (item.key == selectedItemKey) selected else primary,
-                    )
-                    marker.setOnMarkerClickListener { _, _ ->
-                        onSelected(item)
-                        mapView.controller.animateTo(marker.position)
-                        true
+                val name = displayName(item, entryFor(item, settings))
+                val isNew = item.key !in markers
+                val marker = markers.getOrPut(item.key) {
+                    Marker(mapView).also { created ->
+                        created.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
+                        mapView.overlays.add(created)
                     }
-                    mapView.overlays.add(marker)
+                }
+                val currentPosition = marker.position
+                if (
+                    currentPosition == null ||
+                    currentPosition.latitude != location.latitude ||
+                    currentPosition.longitude != location.longitude
+                ) {
+                    marker.position = GeoPoint(location.latitude, location.longitude)
+                }
+                marker.title = name
+                marker.snippet = latestReportText(location)
+                marker.setOnMarkerClickListener { _, _ ->
+                    onMarkerSelected(item.key)
+                    true
+                }
+
+                val glyph = deviceGlyph(name)
+                val color = if (item.key == selectedItemKey) selected else primary
+                val visualKey = MarkerGlyphCacheKey(glyph, color, densityBucket)
+                val oldVisualKey = markerVisuals[item.key]
+                val selectionVisualChanged = selectionChanged &&
+                    (item.key == previousSelectedKey || item.key == selectedItemKey)
+                if (isNew || selectionVisualChanged || oldVisualKey != visualKey) {
+                    marker.icon = glyphCache.getOrPut(visualKey) {
+                        markerDrawable(context, glyph, color)
+                    }
+                    markerVisuals[item.key] = visualKey
                 }
             }
-            val signature = items.sortedBy(FindMyDisplayItem::key).joinToString("|") {
-                "${it.key}:${it.location?.latitude}:${it.location?.longitude}"
-            }
-            if (fittedSignature != signature) {
-                fittedSignature = signature
-                val points = items.mapNotNull { it.location }.map { GeoPoint(it.latitude, it.longitude) }
+            previousSelectedKey = selectedItemKey
+
+            if (!initialCameraApplied) {
+                initialCameraApplied = true
+                val points = items.mapNotNull { item ->
+                    item.location?.let { GeoPoint(it.latitude, it.longitude) }
+                }
                 mapView.post {
-                    if (points.size == 1) {
+                    val viewport = restoredViewport
+                    if (viewport != null) {
+                        mapView.controller.setZoom(viewport.zoom)
+                        mapView.controller.setCenter(GeoPoint(viewport.latitude, viewport.longitude))
+                    } else if (points.size == 1) {
                         mapView.controller.setZoom(15.5)
                         mapView.controller.setCenter(points.single())
                     } else if (points.isNotEmpty()) {
@@ -1567,16 +2062,36 @@ private fun OpenStreetMap(
             mapView.invalidate()
         },
     )
-    // Do not animate from AndroidView.update: map gestures can trigger view updates and that
-    // would fight the user's pan/zoom. Recenter only when the selected device actually changes.
-    LaunchedEffect(selectedItemKey) {
-        items.firstOrNull { it.key == selectedItemKey }?.location?.let { location ->
-            map.post { map.controller.animateTo(GeoPoint(location.latitude, location.longitude)) }
+
+    LaunchedEffect(
+        selectedItemKey,
+        selectedLocation?.latitude,
+        selectedLocation?.longitude,
+        focusRequestToken,
+    ) {
+        val current = FindMyFocusedDeviceSnapshot(
+            key = selectedItemKey,
+            coordinate = selectedLocation?.let { FindMyMapCoordinate(it.latitude, it.longitude) },
+        )
+        val explicitSelectionChanged = focusRequestToken != previousFocusRequestToken
+        val shouldFocus = FindMyMapUiPolicy.shouldFocusCamera(
+            previous = previousFocusedSnapshot,
+            current = current,
+            explicitSelectionChanged = explicitSelectionChanged,
+        )
+        previousFocusedSnapshot = current
+        previousFocusRequestToken = focusRequestToken
+        if (shouldFocus) {
+            current.coordinate?.let { coordinate ->
+                map.post {
+                    map.controller.animateTo(GeoPoint(coordinate.latitude, coordinate.longitude))
+                }
+            }
         }
     }
 }
 
-private fun markerDrawable(context: Context, label: String, color: Int): BitmapDrawable {
+private fun markerDrawable(context: Context, glyph: String, color: Int): BitmapDrawable {
     val density = context.resources.displayMetrics.density
     val size = (46 * density).roundToInt()
     val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
@@ -1590,12 +2105,10 @@ private fun markerDrawable(context: Context, label: String, color: Int): BitmapD
     paint.textAlign = Paint.Align.CENTER
     paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
     paint.textSize = size * 0.42f
-    val initial = deviceGlyph(label)
     val baseline = size / 2f - (paint.ascent() + paint.descent()) / 2f
-    canvas.drawText(initial, size / 2f, baseline, paint)
+    canvas.drawText(glyph, size / 2f, baseline, paint)
     return BitmapDrawable(context.resources, bitmap)
 }
-
 @Composable
 private fun DeviceGlyph(name: String, size: Int = 44) {
     Surface(

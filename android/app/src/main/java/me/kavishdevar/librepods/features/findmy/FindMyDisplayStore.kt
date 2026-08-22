@@ -74,6 +74,7 @@ internal class FindMyDisplayStore(context: Context) {
             put("showCombineNotice", settings.showCombineNotice)
             put("showHiddenDevices", settings.showHiddenDevices)
             put("sortByRecent", settings.sortByRecent)
+            put("darkMapEnabled", settings.darkMapEnabled)
         }
 
         fun decode(json: JSONObject): FindMyDisplaySettings {
@@ -127,6 +128,7 @@ internal class FindMyDisplayStore(context: Context) {
                 showCombineNotice = json.optBoolean("showCombineNotice", true),
                 showHiddenDevices = json.optBoolean("showHiddenDevices", false),
                 sortByRecent = json.optBoolean("sortByRecent", true),
+                darkMapEnabled = json.optBoolean("darkMapEnabled", false),
             )
         }
 

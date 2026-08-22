@@ -28,10 +28,6 @@ data class NearbyFinderState(
     val running: Boolean = false,
     val status: NearbyFinderStatus = NearbyFinderStatus.STOPPED,
     val signal: FinderSignalSnapshot = FinderSignalSnapshot(),
-    val sound: NearbySoundState = NearbySoundState(),
-    val soundTargetIdentityVerified: Boolean = false,
-    val soundTargetFresh: Boolean = false,
-    val soundTargetGeneration: Long = 0L,
     val errorMessage: String? = null
 )
 
@@ -53,10 +49,6 @@ class NearbyAirPodsFinder(
     private var trackedRssi = Int.MIN_VALUE
     private var trackedLastSeen = 0L
     private var trackedIdentityVerified = false
-    private var trackedGeneration = 0L
-    private val soundPlayer = NearbyTrackerSoundPlayer(context) { soundState ->
-        _state.update { it.copy(sound = soundState) }
-    }
 
     fun start(): Boolean {
         if (_state.value.running) return true
@@ -89,17 +81,10 @@ class NearbyAirPodsFinder(
             trackedRssi = Int.MIN_VALUE
             trackedLastSeen = 0L
             trackedIdentityVerified = false
-            trackedGeneration++
-            soundPlayer.beginFinding()
             _state.value = NearbyFinderState(
                 running = true,
                 status = NearbyFinderStatus.WAITING_FOR_SIGNAL,
-                signal = processor.snapshot(SystemClock.elapsedRealtime()),
-                sound = NearbySoundState(
-                    status = NearbySoundStatus.SEARCHING,
-                    message = "Waiting for a nearby AirPods advertisement…"
-                ),
-                soundTargetGeneration = trackedGeneration
+                signal = processor.snapshot(SystemClock.elapsedRealtime())
             )
         }
         tickerJob = scope.launch {
@@ -109,11 +94,6 @@ class NearbyAirPodsFinder(
                 synchronized(targetLock) {
                     if (!_state.value.running) return@launch
                     val snapshot = processor.snapshot(now)
-                    val targetFresh = trackedLastSeen > 0L &&
-                        now - trackedLastSeen < TARGET_STALE_MS
-                    if (trackedLastSeen > 0L && !targetFresh) {
-                        soundPlayer.expireTarget()
-                    }
                     _state.update { previous ->
                         if (!previous.running) previous else previous.copy(
                             status = if (snapshot.proximity == ProximityBucket.SIGNAL_LOST) {
@@ -121,8 +101,7 @@ class NearbyAirPodsFinder(
                             } else {
                                 NearbyFinderStatus.ACTIVE
                             },
-                            signal = snapshot,
-                            soundTargetFresh = targetFresh
+                            signal = snapshot
                         )
                     }
                 }
@@ -140,16 +119,13 @@ class NearbyAirPodsFinder(
             trackedRssi = Int.MIN_VALUE
             trackedLastSeen = 0L
             trackedIdentityVerified = false
-            trackedGeneration++
-            soundPlayer.endFinding()
-            _state.value = NearbyFinderState(soundTargetGeneration = trackedGeneration)
+            _state.value = NearbyFinderState()
         }
     }
 
     fun onVerifiedScanRssi(
         device: BluetoothDevice,
         rssi: Int,
-        connectable: Boolean,
         selectedDeviceIdentityVerified: Boolean
     ) {
         synchronized(targetLock) {
@@ -171,17 +147,11 @@ class NearbyAirPodsFinder(
                     return
                 }
                 processor.reset()
-                trackedGeneration++
-            } else if (previousAddress == null) {
-                trackedGeneration++
             }
             trackedAddress = device.address
             trackedRssi = rssi
             trackedLastSeen = now
             trackedIdentityVerified = selectedDeviceIdentityVerified
-            // ScanResult.isConnectable is only an advertising-property hint and is unreliable
-            // for some Apple rotating advertisements. The actual connection is authoritative.
-            soundPlayer.updateTarget(device, connectable)
             val snapshot = processor.addSample(rssi = rssi, elapsedRealtime = now)
             _state.update { previous ->
                 previous.copy(
@@ -191,9 +161,6 @@ class NearbyAirPodsFinder(
                         previous.status
                     },
                     signal = if (previous.signal.rawRssi == null) snapshot else previous.signal,
-                    soundTargetIdentityVerified = selectedDeviceIdentityVerified,
-                    soundTargetFresh = true,
-                    soundTargetGeneration = trackedGeneration,
                     errorMessage = null
                 )
             }
@@ -211,7 +178,6 @@ class NearbyAirPodsFinder(
                     running = false,
                     status = NearbyFinderStatus.ERROR,
                     signal = snapshot,
-                    soundTargetFresh = false,
                     errorMessage = "AirPods BLE scan failed (code $errorCode)."
                 )
             }
@@ -227,37 +193,6 @@ class NearbyAirPodsFinder(
         }
         return false
     }
-
-    fun playSound(
-        allowUnverifiedTarget: Boolean,
-        expectedTargetGeneration: Long,
-        onSessionFinished: () -> Unit
-    ): Boolean = synchronized(targetLock) {
-        if (!_state.value.running) return@synchronized false
-        if (trackedLastSeen == 0L ||
-            SystemClock.elapsedRealtime() - trackedLastSeen >= TARGET_STALE_MS
-        ) {
-            soundPlayer.expireTarget(force = true)
-            _state.update { it.copy(soundTargetFresh = false) }
-            return@synchronized false
-        }
-        if (!trackedIdentityVerified &&
-            (!allowUnverifiedTarget || expectedTargetGeneration != trackedGeneration)
-        ) {
-            _state.update {
-                it.copy(
-                    sound = NearbySoundState(
-                        status = NearbySoundStatus.FAILED,
-                        message = "The nearby tracker changed. Review the identity warning and try again."
-                    )
-                )
-            }
-            return@synchronized false
-        }
-        soundPlayer.play(onSessionFinished)
-    }
-
-    fun stopSound() = synchronized(targetLock) { soundPlayer.stopSound() }
 
     private companion object {
         const val TARGET_STALE_MS = 5_000L

@@ -76,7 +76,6 @@ class BLEManager(private val context: Context) {
         fun onVerifiedRssi(
             device: BluetoothDevice,
             rssi: Int,
-            connectable: Boolean,
             selectedDeviceIdentityVerified: Boolean
         )
         fun onScanError(errorCode: Int)
@@ -404,7 +403,6 @@ class BLEManager(private val context: Context) {
             airPodsStatusListener?.onVerifiedRssi(
                 result.device,
                 result.rssi,
-                result.isConnectable,
                 acceptedByOwnedRpa
             )
             if (processedAddresses.contains(address)) return

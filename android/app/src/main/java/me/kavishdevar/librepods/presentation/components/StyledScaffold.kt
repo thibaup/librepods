@@ -121,7 +121,7 @@ fun StyledScaffold(
                                         ) {
                                             Icon(
                                                 Icons.AutoMirrored.Default.ArrowBack,
-                                                contentDescription = "",
+                                                contentDescription = "Navigate back",
                                                 modifier = Modifier.size(IconButtonDefaults.mediumIconSize),
                                             )
                                         }

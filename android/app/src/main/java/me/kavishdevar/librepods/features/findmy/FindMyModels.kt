@@ -76,3 +76,8 @@ internal class FindMyApiException(
     cause: Throwable? = null,
     val statusCode: Int? = null,
 ) : Exception(message, cause)
+
+internal val FIND_MY_SESSION_EXPIRED_STATUS_CODES = setOf(401, 421, 450)
+
+internal fun FindMyApiException.isSessionExpired(): Boolean =
+    statusCode?.let(FIND_MY_SESSION_EXPIRED_STATUS_CODES::contains) == true

@@ -416,14 +416,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         override fun onVerifiedRssi(
             device: BluetoothDevice,
             rssi: Int,
-            connectable: Boolean,
             selectedDeviceIdentityVerified: Boolean
         ) {
             if (::nearbyFinder.isInitialized) {
                 nearbyFinder.onVerifiedScanRssi(
                     device,
                     rssi,
-                    connectable,
                     selectedDeviceIdentityVerified
                 )
             }
@@ -3845,33 +3843,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             sharedPreferences.getBoolean(HEART_RATE_BLE_PERIPHERAL_PREFERENCE, false)
         ) {
             heartRateBlePeripheral.start()
-        }
-    }
-
-    fun playNearbySound(
-        allowUnverifiedTarget: Boolean = false,
-        expectedTargetGeneration: Long = -1L
-    ) {
-        if (!::nearbyFinder.isInitialized || !nearbyFinder.state.value.running) return
-        if (::bleManager.isInitialized) bleManager.stopScanning()
-        val started = nearbyFinder.playSound(
-            allowUnverifiedTarget = allowUnverifiedTarget,
-            expectedTargetGeneration = expectedTargetGeneration,
-            onSessionFinished = ::resumeNearbyFinderScanAfterSound
-        )
-        if (!started) resumeNearbyFinderScanAfterSound()
-    }
-
-    fun stopNearbySound() {
-        if (::nearbyFinder.isInitialized) nearbyFinder.stopSound()
-    }
-
-    private fun resumeNearbyFinderScanAfterSound() {
-        if (!::nearbyFinder.isInitialized || !nearbyFinder.state.value.running) return
-        if (!::bleManager.isInitialized ||
-            !bleManager.startScanning(scanAllAdvertisementsForFinder = true)
-        ) {
-            nearbyFinder.onScanError(-1)
         }
     }
 

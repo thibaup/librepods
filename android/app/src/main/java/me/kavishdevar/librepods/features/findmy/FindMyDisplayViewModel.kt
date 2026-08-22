@@ -47,6 +47,7 @@ internal class FindMyDisplayViewModel(application: Application) : AndroidViewMod
         showCombineNotice: Boolean? = null,
         showHiddenDevices: Boolean? = null,
         sortByRecent: Boolean? = null,
+        darkMapEnabled: Boolean? = null,
     ) {
         val current = _uiState.value
         commit(
@@ -54,6 +55,7 @@ internal class FindMyDisplayViewModel(application: Application) : AndroidViewMod
                 showCombineNotice = showCombineNotice ?: current.settings.showCombineNotice,
                 showHiddenDevices = showHiddenDevices ?: current.settings.showHiddenDevices,
                 sortByRecent = sortByRecent ?: current.settings.sortByRecent,
+                darkMapEnabled = darkMapEnabled ?: current.settings.darkMapEnabled,
             ),
         )
     }

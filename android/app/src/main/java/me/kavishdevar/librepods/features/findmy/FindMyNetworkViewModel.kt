@@ -1,7 +1,6 @@
 package me.kavishdevar.librepods.features.findmy
 
 import android.app.Application
-import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -22,7 +21,6 @@ class FindMyNetworkViewModel(application: Application) : AndroidViewModel(applic
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private var appleIdHint = ""
-    private var pendingExportUri: Uri? = null
 
     init {
         restore()
@@ -69,6 +67,28 @@ class FindMyNetworkViewModel(application: Application) : AndroidViewModel(applic
                         if (restored.hasAccessories) refreshReportsInternal()
                     }
                 }
+            } catch (error: FindMyNetworkException) {
+                if (error.reason == FindMyNetworkReasons.SESSION_EXPIRED) {
+                    markSessionExpired()
+                } else {
+                    if (BuildConfig.DEBUG) {
+                        Log.w(TAG, "Find My network restore failed: ${error.message}")
+                    }
+                    _uiState.value = _uiState.value.copy(
+                        phase = FindMyNetworkPhase.ERROR,
+                        appleId = client.currentAppleId.ifBlank { appleIdHint },
+                        errorMessage = safeMessage(error, "Could not restore Find My network."),
+                    )
+                }
+            } catch (error: LinkageError) {
+                if (BuildConfig.DEBUG) {
+                    Log.w(TAG, "Find My network restore hit a native linkage error", error)
+                }
+                _uiState.value = _uiState.value.copy(
+                    phase = FindMyNetworkPhase.ERROR,
+                    appleId = client.currentAppleId.ifBlank { appleIdHint },
+                    errorMessage = safeMessage(error, "On-device Anisette is unavailable."),
+                )
             } catch (error: Exception) {
                 if (BuildConfig.DEBUG) {
                     Log.w(TAG, "Find My network restore failed: ${error.message}")
@@ -101,6 +121,14 @@ class FindMyNetworkViewModel(application: Application) : AndroidViewModel(applic
                         FindMyNetworkAnisetteState.REMOTE_FALLBACK
                     },
                     anisetteDetail = result.detail,
+                )
+            } catch (error: LinkageError) {
+                if (BuildConfig.DEBUG) {
+                    Log.w(TAG, "On-device Anisette hit a native linkage error", error)
+                }
+                _uiState.value = _uiState.value.copy(
+                    anisetteState = FindMyNetworkAnisetteState.REMOTE_FALLBACK,
+                    anisetteDetail = safeMessage(error, "On-device Anisette is unavailable."),
                 )
             } catch (error: Exception) {
                 _uiState.value = _uiState.value.copy(
@@ -190,24 +218,34 @@ class FindMyNetworkViewModel(application: Application) : AndroidViewModel(applic
                     selectedRecoverySerial = null,
                 )
             } catch (error: FindMyNetworkException) {
-                val decision = decideRecoveryFailure(error.reason, attempts)
-                if (decision.stopSession) {
-                    client.closeRecovery()
+                if (error.reason == FindMyNetworkReasons.SESSION_EXPIRED) {
+                    markSessionExpired()
+                } else {
+                    val decision = decideRecoveryFailure(error.reason, attempts)
+                    if (decision.stopSession) {
+                        client.closeRecovery()
+                    }
+                    _uiState.value = _uiState.value.copy(
+                        phase = if (decision.stopSession) {
+                            readyPhase()
+                        } else {
+                            FindMyNetworkPhase.CHOOSE_RECOVERY_DEVICE
+                        },
+                        selectedRecoverySerial = if (decision.clearDeviceSelection) null else serial,
+                        passcodeAttempts = decision.nextAttempts,
+                        errorMessage = if (decision.stoppedAfterLimit) {
+                            "Keychain recovery was stopped after three attempts. " +
+                                "Start a new recovery session before trying again."
+                        } else {
+                            safeMessage(error, "Could not unlock the Apple keychain.")
+                        },
+                    )
                 }
+            } catch (error: LinkageError) {
                 _uiState.value = _uiState.value.copy(
-                    phase = if (decision.stopSession) {
-                        readyPhase()
-                    } else {
-                        FindMyNetworkPhase.CHOOSE_RECOVERY_DEVICE
-                    },
-                    selectedRecoverySerial = if (decision.clearDeviceSelection) null else serial,
-                    passcodeAttempts = decision.nextAttempts,
-                    errorMessage = if (decision.stoppedAfterLimit) {
-                        "Keychain recovery was stopped after three attempts. " +
-                            "Start a new recovery session before trying again."
-                    } else {
-                        safeMessage(error, "Could not unlock the Apple keychain.")
-                    },
+                    phase = FindMyNetworkPhase.CHOOSE_RECOVERY_DEVICE,
+                    selectedRecoverySerial = serial,
+                    errorMessage = safeMessage(error, "Could not unlock the Apple keychain."),
                 )
             } catch (error: Exception) {
                 _uiState.value = _uiState.value.copy(
@@ -240,75 +278,6 @@ class FindMyNetworkViewModel(application: Application) : AndroidViewModel(applic
                 message = "Recovered ${selected.size} Find My network accessor${if (selected.size == 1) "y" else "ies"}.",
             )
             refreshReportsInternal()
-        }
-    }
-
-    fun importOpenTagViewerExport(uri: Uri) {
-        pendingExportUri = uri
-        importOpenTagViewerExport(uri, null)
-    }
-
-    fun submitExportPasscode(passcode: String) {
-        val uri = pendingExportUri ?: return
-        importOpenTagViewerExport(uri, passcode)
-    }
-
-    fun cancelExportPasscode() {
-        pendingExportUri = null
-        _uiState.value = _uiState.value.copy(
-            phase = readyPhase(),
-            errorMessage = null,
-        )
-    }
-
-    private fun importOpenTagViewerExport(uri: Uri, passcode: String?) {
-        if (_uiState.value.phase in BUSY_PHASES) return
-        _uiState.value = _uiState.value.copy(
-            phase = FindMyNetworkPhase.IMPORTING_EXPORT,
-            errorMessage = null,
-        )
-        viewModelScope.launch {
-            try {
-                when (val result = client.importOpenTagViewerExport(uri, passcode)) {
-                    FindMyNetworkExportImportResult.NeedsPasscode -> {
-                        pendingExportUri = uri
-                        _uiState.value = _uiState.value.copy(
-                            phase = FindMyNetworkPhase.ENTER_EXPORT_PASSCODE,
-                            errorMessage = null,
-                        )
-                    }
-                    is FindMyNetworkExportImportResult.Imported -> {
-                        pendingExportUri = null
-                        _uiState.value = _uiState.value.copy(
-                            phase = FindMyNetworkPhase.REFRESHING_REPORTS,
-                            recoveryDevices = emptyList(),
-                            selectedRecoverySerial = null,
-                            accessories = result.accessories,
-                            message = "Imported ${result.count} accessor${if (result.count == 1) "y" else "ies"} from the OpenTagViewer export.",
-                            errorMessage = null,
-                        )
-                        refreshReportsInternal()
-                    }
-                }
-            } catch (error: FindMyNetworkException) {
-                val retryPasscode = error.reason == FindMyNetworkReasons.EXPORT_WRONG_PASSCODE ||
-                    error.reason == "export_invalid_passcode_format"
-                if (!retryPasscode) pendingExportUri = null
-                _uiState.value = _uiState.value.copy(
-                    phase = if (retryPasscode) {
-                        FindMyNetworkPhase.ENTER_EXPORT_PASSCODE
-                    } else {
-                        readyPhase()
-                    },
-                    errorMessage = safeMessage(error, "The OpenTagViewer export could not be imported."),
-                )
-            } catch (error: Exception) {
-                pendingExportUri = null
-                _uiState.value = _uiState.value.copy(
-                    phase = readyPhase(),
-                    errorMessage = safeMessage(error, "The OpenTagViewer export could not be imported."),
-                )
-            }
         }
     }
 
@@ -361,6 +330,20 @@ class FindMyNetworkViewModel(application: Application) : AndroidViewModel(applic
                     refreshingBeaconIds = emptySet(),
                     errorMessage = null,
                 )
+            } catch (error: FindMyNetworkException) {
+                if (error.reason == FindMyNetworkReasons.SESSION_EXPIRED) {
+                    markSessionExpired()
+                } else {
+                    _uiState.value = _uiState.value.copy(
+                        refreshingBeaconIds = emptySet(),
+                        errorMessage = safeMessage(error, "Could not refresh this accessory."),
+                    )
+                }
+            } catch (error: LinkageError) {
+                _uiState.value = _uiState.value.copy(
+                    refreshingBeaconIds = emptySet(),
+                    errorMessage = safeMessage(error, "Could not refresh this accessory."),
+                )
             } catch (error: Exception) {
                 _uiState.value = _uiState.value.copy(
                     refreshingBeaconIds = emptySet(),
@@ -401,6 +384,20 @@ class FindMyNetworkViewModel(application: Application) : AndroidViewModel(applic
 
     fun consumeMessage() {
         _uiState.value = _uiState.value.copy(message = null)
+    }
+
+    private suspend fun markSessionExpired() {
+        val appleId = _uiState.value.appleId.ifBlank { client.currentAppleId }
+        val anisetteState = _uiState.value.anisetteState
+        val anisetteDetail = _uiState.value.anisetteDetail
+        client.signOut()
+        _uiState.value = FindMyNetworkUiState(
+            phase = FindMyNetworkPhase.SIGNED_OUT,
+            appleId = appleId,
+            anisetteState = anisetteState,
+            anisetteDetail = anisetteDetail,
+            errorMessage = "Find My network session expired. Sign in again.",
+        )
     }
 
     private fun signedInReadyToRecover(appleId: String) {
@@ -448,6 +445,20 @@ class FindMyNetworkViewModel(application: Application) : AndroidViewModel(applic
         viewModelScope.launch {
             try {
                 operation()
+            } catch (error: FindMyNetworkException) {
+                if (error.reason == FindMyNetworkReasons.SESSION_EXPIRED) {
+                    markSessionExpired()
+                } else {
+                    _uiState.value = _uiState.value.copy(
+                        phase = fallback,
+                        errorMessage = safeMessage(error, "Find My network failed."),
+                    )
+                }
+            } catch (error: LinkageError) {
+                _uiState.value = _uiState.value.copy(
+                    phase = fallback,
+                    errorMessage = safeMessage(error, "Find My network failed."),
+                )
             } catch (error: Exception) {
                 _uiState.value = _uiState.value.copy(
                     phase = fallback,
@@ -476,11 +487,10 @@ class FindMyNetworkViewModel(application: Application) : AndroidViewModel(applic
             FindMyNetworkPhase.OPENING_RECOVERY,
             FindMyNetworkPhase.UNLOCKING_KEYCHAIN,
             FindMyNetworkPhase.IMPORTING_ACCESSORIES,
-            FindMyNetworkPhase.IMPORTING_EXPORT,
             FindMyNetworkPhase.REFRESHING_REPORTS,
         )
 
-        fun safeMessage(error: Exception, fallback: String): String =
+        fun safeMessage(error: Throwable, fallback: String): String =
             error.message?.trim()?.takeIf(String::isNotBlank)?.take(600) ?: fallback
     }
 }
